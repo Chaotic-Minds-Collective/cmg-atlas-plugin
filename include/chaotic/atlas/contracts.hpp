@@ -140,4 +140,37 @@ struct EventEnvelope {
   std::optional<std::string> correlation_id;
 };
 
+// Validate the host-neutral envelope before an adapter serializes it for Core.
+// Identifiers remain opaque strings; this layer does not invent provider ID formats.
+inline bool isValidContractText(const std::string& value) noexcept {
+  return !value.empty() && value.size() <= 200 &&
+         value.find('\0') == std::string::npos;
+}
+
+inline bool isValidPlayerIdentity(const PlayerIdentity& player) noexcept {
+  const auto validOptional = [](const std::optional<std::string>& value) noexcept {
+    return !value || isValidContractText(*value);
+  };
+  return validOptional(player.platform_id) &&
+         validOptional(player.chaotic_player_id) &&
+         validOptional(player.character_id) &&
+         validOptional(player.character_name);
+}
+
+inline bool isValidEventEnvelope(const EventEnvelope& event) noexcept {
+  if (event.schema_version != 1 || !isValidContractText(event.event_id) ||
+      eventKindName(event.kind).empty()) {
+    return false;
+  }
+  if (!isValidContractText(event.server.cluster_id) ||
+      !isValidContractText(event.server.grid_id) ||
+      !isValidContractText(event.server.server_id)) {
+    return false;
+  }
+  if (event.player && !isValidPlayerIdentity(*event.player)) return false;
+  if (event.tribe_id && !isValidContractText(*event.tribe_id)) return false;
+  if (event.correlation_id && !isValidContractText(*event.correlation_id)) return false;
+  return true;
+}
+
 }  // namespace chaotic::atlas

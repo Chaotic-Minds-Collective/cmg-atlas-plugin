@@ -38,9 +38,42 @@ int main() {
   EventEnvelope event{};
   event.event_id = "test-event";
   event.kind = EventKind::character_transferred;
+  event.server = {"cluster-main", "A1", "server-east"};
   event.player = PlayerIdentity{};
   ATLAS_CHECK(event.schema_version == 1);
   ATLAS_CHECK(event.player.has_value());
+  ATLAS_CHECK(isValidEventEnvelope(event));
+
+  auto invalidEvent = event;
+  invalidEvent.event_id.clear();
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.schema_version = 2;
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.kind = static_cast<EventKind>(255);
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.server.cluster_id.clear();
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.server.grid_id.clear();
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.server.server_id.clear();
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.player->platform_id = "";
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.tribe_id = "";
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.correlation_id = "";
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
+  invalidEvent = event;
+  invalidEvent.event_id = std::string(201, 'x');
+  ATLAS_CHECK(!isValidEventEnvelope(invalidEvent));
 
   constexpr std::array<std::pair<EventKind, std::string_view>, 23> eventNames{{
       {EventKind::player_joined, "player.joined"},
