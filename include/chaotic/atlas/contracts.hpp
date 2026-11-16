@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -143,8 +144,38 @@ struct EventEnvelope {
 // Validate the host-neutral envelope before an adapter serializes it for Core.
 // Identifiers remain opaque strings; this layer does not invent provider ID formats.
 inline bool isValidContractText(const std::string& value) noexcept {
-  return !value.empty() && value.size() <= 200 &&
-         value.find('\0') == std::string::npos;
+  if (value.empty() || value.size() > 200 ||
+      value.find('\0') != std::string::npos) {
+    return false;
+  }
+  for (const unsigned char character : value) {
+    if (std::isspace(character) == 0) return true;
+  }
+  return false;
+}
+
+// Core validates clusterId and serverId with Zod's RFC 4122 UUID schema.
+inline bool isValidUuid(const std::string& value) noexcept {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  const auto isHex = [](unsigned char character) noexcept {
+    return (character >= '0' && character <= '9') ||
+           (character >= 'a' && character <= 'f') ||
+           (character >= 'A' && character <= 'F');
+  };
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    if (!isHex(static_cast<unsigned char>(value[index]))) return false;
+  }
+  const char version = value[14];
+  const char variant = value[19];
+  const bool validVersion = version >= '1' && version <= '8';
+  const bool validVariant = variant == '8' || variant == '9' ||
+                            variant == 'a' || variant == 'A' ||
+                            variant == 'b' || variant == 'B';
+  return validVersion && validVariant;
 }
 
 inline bool isValidPlayerIdentity(const PlayerIdentity& player) noexcept {
@@ -162,9 +193,9 @@ inline bool isValidEventEnvelope(const EventEnvelope& event) noexcept {
       eventKindName(event.kind).empty()) {
     return false;
   }
-  if (!isValidContractText(event.server.cluster_id) ||
+  if (!isValidUuid(event.server.cluster_id) ||
       !isValidContractText(event.server.grid_id) ||
-      !isValidContractText(event.server.server_id)) {
+      !isValidUuid(event.server.server_id)) {
     return false;
   }
   if (event.player && !isValidPlayerIdentity(*event.player)) return false;
