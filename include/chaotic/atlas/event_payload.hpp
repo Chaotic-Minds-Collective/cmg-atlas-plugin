@@ -6,6 +6,14 @@
 
 namespace chaotic::atlas {
 
+inline std::string makeGameEventId(
+    const std::string& serverId,
+    const std::string& occurredAt,
+    unsigned long long sequence
+) {
+    return "atlas-" + serverId + "-" + occurredAt + "-" + std::to_string(sequence);
+}
+
 struct GameEventRequest {
     std::string eventId;
     std::string eventType;
