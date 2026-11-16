@@ -462,7 +462,7 @@ void startPlayerEventHooks() {
     logMessage("[Chaotic Gaming Core] ATLAS player join/leave hooks installed; adapter module pinned for safe process-lifetime callbacks.\n");
 }
 
-void stopPlayerEventHooks() noexcept {
+void disablePlayerEventPublishing() noexcept {
     g_eventPublishingConfigured.store(false, std::memory_order_release);
     if (g_joinHookInstalled || g_logoutHookInstalled) {
         logMessage("[Chaotic Gaming Core] Player event publishing disabled; process-lifetime hooks remain passthrough until server restart.\n");
@@ -564,7 +564,7 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
 
 CG_EXPORT void CG_CALL Plugin_Unload() noexcept {
     std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
-    stopPlayerEventHooks();
+    disablePlayerEventPublishing();
     if (g_serverStateCallbackRegistered) {
         try {
             ArkApi::GetCommands().RemoveOnTimerCallback(FString(kServerStateCallbackId));
