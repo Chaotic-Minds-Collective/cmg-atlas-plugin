@@ -32,6 +32,7 @@
 
 namespace {
 struct PendingEvent {
+    unsigned long long generation{};
     std::string eventId;
     std::string eventType;
     std::string occurredAt;
@@ -67,7 +68,9 @@ bool g_logoutHookInstalled{false};
 bool g_hooksPinnedPassthrough{false};
 std::atomic<bool> g_eventRequested{false};
 std::atomic<unsigned long long> g_eventSequence{0};
+// Guards event capture, configuration replacement, and queue generation.
 std::mutex g_eventMutex;
+unsigned long long g_eventGeneration{0};
 std::deque<PendingEvent> g_eventQueue;
 constexpr std::size_t kMaximumPendingEvents = 1000;
 constexpr char kServerStateCallbackId[] = "ChaoticGamingCore.ServerState";
@@ -167,8 +170,10 @@ std::string toUtf8(const FString& value) {
 
 bool makePlayerLifecycleEvent(const char* eventType, AController* controller,
     bool isFromLogin, PendingEvent& event) noexcept {
-    if (!g_eventPublishingConfigured.load(std::memory_order_acquire) || !controller) return false;
     try {
+        std::lock_guard<std::mutex> lock(g_eventMutex);
+        if (!g_eventPublishingConfigured.load(std::memory_order_acquire) || !controller) return false;
+        event.generation = g_eventGeneration;
         const uint64 platformId = ArkApi::IApiUtils::GetSteamIdFromController(controller);
         if (platformId == 0) return false;
 
@@ -196,6 +201,9 @@ void enqueueEvent(PendingEvent event) noexcept {
     try {
         {
             std::lock_guard<std::mutex> lock(g_eventMutex);
+            // A logout callback can finish after unload or even after a reload.
+            if (!g_eventPublishingConfigured.load(std::memory_order_acquire) ||
+                event.generation != g_eventGeneration) return;
             if (g_eventQueue.size() >= kMaximumPendingEvents) {
                 logMessage("[Chaotic Gaming Core] Event queue full; newest player event dropped.\n");
                 return;
@@ -391,7 +399,8 @@ EventPublishResult publishPendingEvents(const std::chrono::steady_clock::time_po
         PendingEvent event;
         {
             std::lock_guard<std::mutex> lock(g_eventMutex);
-            if (g_eventQueue.empty()) return EventPublishResult::Drained;
+            if (!g_eventPublishingConfigured.load(std::memory_order_acquire) ||
+                g_eventQueue.empty()) return EventPublishResult::Drained;
             event = std::move(g_eventQueue.front());
             g_eventQueue.pop_front();
         }
@@ -403,7 +412,10 @@ EventPublishResult publishPendingEvents(const std::chrono::steady_clock::time_po
         }
         if (!accepted) {
             std::lock_guard<std::mutex> lock(g_eventMutex);
-            g_eventQueue.push_front(std::move(event));
+            if (g_eventPublishingConfigured.load(std::memory_order_acquire) &&
+                event.generation == g_eventGeneration) {
+                g_eventQueue.push_front(std::move(event));
+            }
             return EventPublishResult::RetryLater;
         }
     }
@@ -463,7 +475,13 @@ void startPlayerEventHooks() {
 }
 
 void disablePlayerEventPublishing() noexcept {
-    g_eventPublishingConfigured.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_eventMutex);
+        g_eventPublishingConfigured.store(false, std::memory_order_release);
+        ++g_eventGeneration;
+        g_eventQueue.clear();
+        g_eventRequested.store(false, std::memory_order_release);
+    }
     if (g_joinHookInstalled || g_logoutHookInstalled) {
         logMessage("[Chaotic Gaming Core] Player event publishing disabled; process-lifetime hooks remain passthrough until server restart.\n");
     }
@@ -513,12 +531,15 @@ void startHeartbeat() {
         return;
     }
 
+    // The previous worker has joined before configuration can be replaced.
+    // Serialize with callbacks retained by the process-lifetime detours.
+    std::lock_guard<std::mutex> eventLock(g_eventMutex);
+    g_eventPublishingConfigured.store(false, std::memory_order_release);
     g_coreApiUrl = readEnvironment("CHAOTIC_CORE_API_URL");
     g_serviceToken = readEnvironment("CHAOTIC_CORE_SERVICE_TOKEN");
     g_serverId = readEnvironment("CHAOTIC_CORE_SERVER_ID");
     g_clusterId = readEnvironment("CHAOTIC_CORE_CLUSTER_ID");
     g_gridId = readEnvironment("CHAOTIC_CORE_GRID_ID");
-    g_eventPublishingConfigured.store(!g_hooksPinnedPassthrough && isUuid(g_clusterId) && isGridId(g_gridId) && readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") == "1", std::memory_order_release);
     const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
     g_serverBuild = serverBuild.empty() ? "unknown" : serverBuild;
 
@@ -548,6 +569,7 @@ void startHeartbeat() {
     g_serverStateCallbackRegistered = true;
     g_stop.store(false);
     g_heartbeatThread = std::thread(heartbeatLoop);
+    g_eventPublishingConfigured.store(!g_hooksPinnedPassthrough && isUuid(g_clusterId) && isGridId(g_gridId) && readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") == "1", std::memory_order_release);
 }
 } // namespace
 
