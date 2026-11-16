@@ -27,6 +27,7 @@ add_library(cmg_atlas_sdk_import UNKNOWN IMPORTED GLOBAL)
 set_target_properties(cmg_atlas_sdk_import PROPERTIES
   IMPORTED_LOCATION "${cmg_atlas_api_SOURCE_DIR}/out_lib/AtlasApi.lib"
   INTERFACE_INCLUDE_DIRECTORIES "${cmg_atlas_api_SOURCE_DIR}/version/Core/Public"
+  INTERFACE_COMPILE_DEFINITIONS "UNICODE;_UNICODE"
 )
 
 add_library(ChaoticGamingCore SHARED
