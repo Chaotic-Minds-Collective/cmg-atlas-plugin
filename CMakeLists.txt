@@ -35,6 +35,7 @@ add_library(ChaoticGamingCore SHARED
   plugins/ChaoticGamingCore/src/atlas_sdk_link_check.cpp
 )
 target_compile_features(ChaoticGamingCore PRIVATE cxx_std_17)
+target_include_directories(ChaoticGamingCore PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(ChaoticGamingCore PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
