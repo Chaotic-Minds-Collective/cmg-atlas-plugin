@@ -19,7 +19,7 @@ library is `out_lib/AtlasApi.lib`. CMake verifies both exist before building.
 The API repository's `LICENSE.TXT` is MIT; retain its copyright and license
 notice when redistributing substantial portions or SDK artifacts.
 
-The SDK link-check export references `ArkApi::GetCommands()` to ensure the compiler sees the real ATLAS headers and the linker resolves the import library. The adapter also samples server readiness/player count through the ATLAS API and can publish player join/leave events to Core. Gameplay hooks remain disabled unless explicitly opted in after isolated-server validation.
+The SDK link-check export references `ArkApi::GetCommands()` to ensure the compiler sees the real ATLAS headers and the linker resolves the import library. The adapter also samples server readiness/player count through the ATLAS API and can publish player join/leave events to Core. Gameplay hooks remain disabled unless explicitly opted in after isolated-server validation. When enabled, the adapter pins its DLL module for the server process lifetime before installing detours. `Plugin_Unload` disables event publishing and leaves the detours as pass-throughs; a server process restart is required to fully remove them.
 
 ## Server-independent development
 
