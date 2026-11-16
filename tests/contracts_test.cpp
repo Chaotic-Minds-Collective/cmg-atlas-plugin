@@ -1,5 +1,6 @@
 #include "chaotic/atlas/contracts.hpp"
 #include "chaotic/atlas/heartbeat_payload.hpp"
+#include "chaotic/atlas/event_payload.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -132,6 +133,14 @@ int main() {
   ATLAS_CHECK(onlineHeartbeat == R"({"game":"atlas","serverVersion":"Atlas 1.71","adapterVersion":"0.2.0","online":true,"playerCount":12})");
   const auto offlineHeartbeat = makeHeartbeatPayload("Atlas \"1.71\"\nBuild", "0.2.0", false, 0);
   ATLAS_CHECK(offlineHeartbeat == R"({"game":"atlas","serverVersion":"Atlas \"1.71\"\nBuild","adapterVersion":"0.2.0","online":false,"playerCount":0})");
+
+  const GameEventRequest joinedEvent{
+      "atlas-20261116T200000000Z-1", "player.joined", "2026-11-16T20:00:00.000Z",
+      "11111111-1111-4111-8111-111111111111", "A1",
+      "22222222-2222-4222-8222-222222222222",
+      makePlayerLifecyclePayload("76561198000000000", "Player \"One\"", "42", true)};
+  ATLAS_CHECK(makeGameEventRequestBody(joinedEvent) ==
+      R"({"game":"atlas","eventId":"atlas-20261116T200000000Z-1","eventType":"player.joined","occurredAt":"2026-11-16T20:00:00.000Z","scope":{"clusterId":"11111111-1111-4111-8111-111111111111","gridId":"A1","serverId":"22222222-2222-4222-8222-222222222222"},"payload":{"platformId":"76561198000000000","playerName":"Player \"One\"","gamePlayerId":"42","isFromLogin":true}})");
 
   return EXIT_SUCCESS;
 }
