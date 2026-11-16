@@ -134,6 +134,11 @@ int main() {
   const auto offlineHeartbeat = makeHeartbeatPayload("Atlas \"1.71\"\nBuild", "0.2.0", false, 0);
   ATLAS_CHECK(offlineHeartbeat == R"({"game":"atlas","serverVersion":"Atlas \"1.71\"\nBuild","adapterVersion":"0.2.0","online":false,"playerCount":0})");
 
+  const auto eventIdServerA = makeGameEventId("11111111-1111-4111-8111-111111111111", "2026-11-16T20:00:00.000Z", 1);
+  const auto eventIdServerB = makeGameEventId("22222222-2222-4222-8222-222222222222", "2026-11-16T20:00:00.000Z", 1);
+  ATLAS_CHECK(eventIdServerA != eventIdServerB);
+  ATLAS_CHECK(eventIdServerA.find("11111111-1111-4111-8111-111111111111") != std::string::npos);
+
   const GameEventRequest joinedEvent{
       "atlas-20261116T200000000Z-1", "player.joined", "2026-11-16T20:00:00.000Z",
       "11111111-1111-4111-8111-111111111111", "A1",
