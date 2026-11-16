@@ -3,7 +3,7 @@
 ## Pinned dependency
 
 - Repository: https://github.com/Chaotic-Minds-Collective/cmg-atlas-api
-- Commit: `144ee5301177428894eda4c318276f52f051d3f5`
+- Commit: `1bc2be00b5841069d816ff6c9d85486b13cfc252`
 - Public include root: `version/Core/Public`
 - ATLAS import library: `out_lib/AtlasApi.lib`
 - License: MIT, from the API repository's `LICENSE.TXT`
@@ -42,3 +42,9 @@ It is not a complete ABI or runtime-compatibility test. In particular:
 4. Verify plugin initialization/unload and log behavior.
 5. Only then implement a harmless diagnostic command and one read-only player
    event hook, with explicit cleanup on unload.
+
+## Player lifecycle event bridge
+
+The native adapter now contains read-only hooks for `AShooterGameMode.HandleNewPlayer` and `AShooterGameMode.Logout`. They map to Core's normalized `player.joined` and `player.left` event types and publish to `POST /integrations/servers/{serverId}/events` using the server-scoped `events.publish` permission. Events are captured on the game thread, queued in memory, and sent by the existing worker thread; network I/O never runs inside a game callback. The queue is bounded and retries retain the same event ID for Core's idempotent ingestion.
+
+These hooks are **disabled by default**. Configure `CHAOTIC_CORE_CLUSTER_ID` and `CHAOTIC_CORE_GRID_ID`, issue a service credential with both `servers.heartbeat` and `events.publish`, then set `CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS=1` only after validating the exact server build in an isolated, disposable ATLAS instance. CI proves compilation and contract serialization, not live hook ABI or gameplay behavior. Do not enable this on a production server until that isolated test passes.
