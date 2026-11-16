@@ -421,7 +421,7 @@ void startPlayerEventHooks() {
         reinterpret_cast<LPVOID>(&handleNewPlayerHook), &g_originalHandleNewPlayer);
     g_logoutHookInstalled = hooks.SetHook("AShooterGameMode.Logout",
         reinterpret_cast<LPVOID>(&logoutHook), &g_originalLogout);
-    if (!g_joinHookInstalled || !g_logoutHookInstalled) {
+    if (!g_joinHookInstalled || !g_logoutHookInstalled || !g_originalHandleNewPlayer || !g_originalLogout) {
         if (g_logoutHookInstalled) hooks.DisableHook("AShooterGameMode.Logout", reinterpret_cast<LPVOID>(&logoutHook));
         if (g_joinHookInstalled) hooks.DisableHook("AShooterGameMode.HandleNewPlayer", reinterpret_cast<LPVOID>(&handleNewPlayerHook));
         g_joinHookInstalled = false;
