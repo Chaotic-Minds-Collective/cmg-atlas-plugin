@@ -7,7 +7,10 @@ endif()
 
 # Pin the ATLAS API source and import library together; do not track a moving branch.
 include(FetchContent)
-set(CMG_ATLAS_API_COMMIT "144ee5301177428894eda4c318276f52f051d3f5" CACHE STRING "Pinned cmg-atlas-api commit")
+set(CMG_ATLAS_API_COMMIT "1bc2be00b5841069d816ff6c9d85486b13cfc252" CACHE STRING "Pinned cmg-atlas-api commit")
+if(CMG_ATLAS_API_COMMIT STREQUAL "144ee5301177428894eda4c318276f52f051d3f5")
+  set(CMG_ATLAS_API_COMMIT "1bc2be00b5841069d816ff6c9d85486b13cfc252" CACHE STRING "Pinned cmg-atlas-api commit" FORCE)
+endif()
 FetchContent_Declare(cmg_atlas_api
   GIT_REPOSITORY https://github.com/Chaotic-Minds-Collective/cmg-atlas-api.git
   GIT_TAG ${CMG_ATLAS_API_COMMIT}
@@ -35,6 +38,7 @@ add_library(ChaoticGamingCore SHARED
   plugins/ChaoticGamingCore/src/atlas_sdk_link_check.cpp
 )
 target_compile_features(ChaoticGamingCore PRIVATE cxx_std_17)
+target_include_directories(ChaoticGamingCore PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(ChaoticGamingCore PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
@@ -42,7 +46,7 @@ target_compile_definitions(ChaoticGamingCore PRIVATE
   UNICODE
   _UNICODE
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
-  CG_ATLAS_API_VERSION="1.7"
+  CG_ATLAS_API_VERSION=\"1.71\"
 )
 target_link_libraries(ChaoticGamingCore PRIVATE cmg_atlas_sdk_import winhttp)
 

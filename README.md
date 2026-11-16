@@ -13,16 +13,13 @@ See the [complete Chaotic Minds Gaming ATLAS Plugin Suite](docs/PLUGIN_SUITE.md)
 ## ATLAS SDK dependency
 
 The native Windows target fetches **cmg-atlas-api** at pinned commit
-[`144ee5301177428894eda4c318276f52f051d3f5`](https://github.com/Chaotic-Minds-Collective/cmg-atlas-api/commit/144ee5301177428894eda4c318276f52f051d3f5).
+[`1bc2be00b5841069d816ff6c9d85486b13cfc252`](https://github.com/Chaotic-Minds-Collective/cmg-atlas-api/commit/1bc2be00b5841069d816ff6c9d85486b13cfc252).
 The headers are consumed from `version/Core/Public` and the matching import
 library is `out_lib/AtlasApi.lib`. CMake verifies both exist before building.
 The API repository's `LICENSE.TXT` is MIT; retain its copyright and license
 notice when redistributing substantial portions or SDK artifacts.
 
-The SDK link-check export references `ArkApi::GetCommands()` to ensure the
-compiler sees the real ATLAS headers and the linker resolves the import
-library. It is not called automatically and does not register gameplay hooks
-or commands.
+The SDK link-check export references `ArkApi::GetCommands()` to ensure the compiler sees the real ATLAS headers and the linker resolves the import library. The adapter also samples server readiness/player count through the ATLAS API and can publish player join/leave events to Core. Gameplay hooks remain disabled unless explicitly opted in after isolated-server validation. When enabled, the adapter pins its DLL module for the server process lifetime before installing detours. `Plugin_Unload` disables event publishing and leaves the detours as pass-throughs; a server process restart is required to fully remove them.
 
 ## Server-independent development
 
@@ -35,7 +32,7 @@ The mock stream is test-only. It does not connect to a game server, issue RCON c
 
 ## Compatibility status
 
-**Not yet validated against a live ATLAS server.** The SDK headers/import library are now a pinned build dependency, but that does not prove the plugin loads against the installed server runtime. The supplied runtime PDB identifies an MSVC 14.34 linker while the API project file declares toolset v142. CI must verify compilation/linking; exact server build, loader, runtime API version, callback lifecycle, threading model, and ABI still require an isolated server test before native gameplay features are enabled.
+**Not yet validated against a live ATLAS server.** The ATLAS 1.71 headers/import library are a pinned build dependency and CI compiles the adapter, but that does not prove the plugin loads against the installed server runtime. The supplied runtime PDB identifies an MSVC 14.34 linker while the API project file declares toolset v142. CI must verify compilation/linking; exact server build, loader, runtime API version, callback lifecycle, threading model, and ABI still require an isolated server test before native gameplay features are enabled.
 
 ## Repository rules
 

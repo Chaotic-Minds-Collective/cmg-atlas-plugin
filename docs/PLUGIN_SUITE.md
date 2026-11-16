@@ -4,10 +4,10 @@ Chaotic Minds Gaming's (CMG) ATLAS work is organized as a coordinated suite of i
 
 ## Shared foundations
 
-- [CMG Core](https://github.com/Chaotic-Minds-Collective/cmg-atlas-core-plugin) — identity, authentication, scoped RBAC, server registry, platform APIs, PostgreSQL-backed domain data, event outbox, commerce, entitlements, reward queue and plugin metadata registry.
-- [CMG ATLAS Adapter](https://github.com/Chaotic-Minds-Collective/cmg-atlas-plugin) — native integration boundary, C++ contracts, plugin scaffold and host-runtime experiments.
-- [CMG ATLAS Admin Plugin](https://github.com/Chaotic-Minds-Collective/cmg-atlas-admin-plugin) — existing Python backend, Discord bot, frontend and backup scripts; reuse only after security and dependency review.
-- [CMG ATLAS Resource Map Plugin](https://github.com/Chaotic-Minds-Collective/cmg-atlas-resource-map-plugin) — existing icon/data material for GridForge; provenance and license must be checked before redistribution.
+- [CMG Core](https://github.com/Chaotic-Minds-Collective/cmg-atlas-core-plugin) â identity, authentication, scoped RBAC, server registry, platform APIs, PostgreSQL-backed domain data, event outbox, commerce, entitlements, reward queue and plugin metadata registry.
+- [CMG ATLAS Adapter](https://github.com/Chaotic-Minds-Collective/cmg-atlas-plugin) â native integration boundary, C++ contracts, plugin scaffold and host-runtime experiments.
+- [CMG ATLAS Admin Plugin](https://github.com/Chaotic-Minds-Collective/cmg-atlas-admin-plugin) â existing Python backend, Discord bot, frontend and backup scripts; reuse only after security and dependency review.
+- [CMG ATLAS Resource Map Plugin](https://github.com/Chaotic-Minds-Collective/cmg-atlas-resource-map-plugin) â existing icon/data material for GridForge; provenance and license must be checked before redistribution.
 
 ## Product modules
 
@@ -37,12 +37,12 @@ Each module repository contains its own README and `docs/IMPLEMENTATION_PLAN.md`
 ## Current implementation facts and gaps
 
 - Core is a TypeScript/Node.js modular monolith using PostgreSQL and REST APIs.
-- Core's current normalized game-event ingestion accepts 23 event types: `player.joined`, `player.left`, `player.connected`, `player.disconnected`, `player.chat`, `player.died`, `player.killed`, `character.created`, `character.transferred`, `tribe.created`, `tribe.member.joined`, `tribe.member.left`, `tribe.updated`, `chat.global`, `chat.tribe`, `ship.sunk`, `ship.retrieved`, `structure.destroyed`, `tame.created`, `tame.died`, `server.started`, `server.stopped` and `server.state.changed`. The adapter publisher validates against this Core allowlist and rejects event types outside it before sending.
+- Core's normalized game-event ingestion accepts 23 event types: `player.joined`, `player.left`, `player.connected`, `player.disconnected`, `player.chat`, `player.died`, `player.killed`, `character.created`, `character.transferred`, `tribe.created`, `tribe.member.joined`, `tribe.member.left`, `tribe.updated`, `chat.global`, `chat.tribe`, `ship.sunk`, `ship.retrieved`, `structure.destroyed`, `tame.created`, `tame.died`, `server.started`, `server.stopped` and `server.state.changed`. The JavaScript host publisher validates the full allowlist. The native ATLAS 1.71 adapter currently emits only `player.joined` and `player.left` through Core's server-scoped endpoint; its hooks remain disabled by default pending isolated runtime validation.
 - Core has a durable reward claim/acknowledgement workflow. It does not itself grant items in ATLAS; the adapter must perform and confirm the game-side grant.
 - Core's plugin registry records metadata, versions and desired state. It does not download, install, dynamically load, sandbox or execute plugin binaries.
-- The current ATLAS C++ plugin scaffold reports lifecycle and can optionally send a read-only heartbeat. It is not yet a verified game-hook implementation.
+- The native adapter targets API 1.71 and CI compiles the Windows x64 plugin. It samples server readiness and player count for heartbeat reporting and contains opt-in player join/leave hooks that queue events off the game thread. The hooks remain disabled by default; successful CI compilation is not proof that they match the deployed server runtime ABI.
 - The JavaScript host runtime manages explicitly registered in-process adapters; it is not a native ATLAS plugin loader.
-- Exact ATLAS server build, plugin loader, SDK/headers, callback availability, threading model and OS/toolchain remain unverified. CI artifact compilation is not proof of successful loading in a real server.
+- The SDK commit and Windows x64 toolchain are pinned and CI-compiled. The exact deployed ATLAS server build, loader behavior, hook ABI and runtime threading behavior remain unverified until an isolated load test is completed.
 
 ## Recommended delivery sequence
 
@@ -55,3 +55,15 @@ Each module repository contains its own README and `docs/IMPLEMENTATION_PLAN.md`
 7. Run cross-module integration, security and multi-grid failure/recovery tests.
 
 No production server changes, paid services, live payments or public binary releases are authorized by this planning document.
+
+## Implementation status — 2026-11-16
+
+The API 1.71 SDK pin/build correction and Core server-scoped game-event ingestion groundwork have been merged. The following product-module foundations are now in reviewable PRs:
+
+- **Native adapter:** Windows x64 API 1.71 build, readiness/player-count heartbeat, and opt-in `player.joined`/`player.left` event publishing. Event IDs include server identity. Heartbeats use a monotonic deadline independent of event traffic. Hooks remain disabled by default; if enabled, the DLL is pinned for process lifetime and plugin unload disables publishing while leaving detours as passthrough until server restart. Isolated runtime validation is still required.
+- **Commerce:** read-only Core catalogue, entitlement and order-history client. Core has no wallet-balance endpoint yet; no checkout, payment, wallet bypass, or item delivery is included.
+- **World:** versioned observe-only policy schema and read-only dry-run diff. No ATLAS enforcement or config mutation is enabled.
+- **Adventures:** quest schema and offline reducer consuming Core's actual `game.event.received` outbox record shape for the two currently emitted player events. Progress remains in memory; durable persistence and reward delivery are pending.
+- **GridForge:** implementation remains gated on an authoritative, versioned ATLAS grid JSON sample/schema and a provenance/license review of map assets. Do not infer the native schema from the cluster-launch PowerShell script.
+
+These are foundations, not a claim that the entire suite is production-complete. No PRs in this implementation batch have been merged, and no live ATLAS server has been modified.

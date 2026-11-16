@@ -7,10 +7,12 @@
   "dependencies": [],
   "capabilities": [
     "server.lifecycle",
-    "server.heartbeat"
+    "server.heartbeat",
+    "player.lifecycle.events"
   ],
   "permissions": [
-    "servers.heartbeat"
+    "servers.heartbeat",
+    "events.publish"
   ],
   "compatibility": {
     "gameBuilds": [],
@@ -48,6 +50,19 @@
         "type": "integer",
         "minimum": 30,
         "maximum": 300
+      },
+      "clusterId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "gridId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "enablePlayerEvents": {
+        "type": "boolean",
+        "default": false
       }
     }
   }
