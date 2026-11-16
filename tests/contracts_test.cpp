@@ -1,4 +1,5 @@
 #include "chaotic/atlas/contracts.hpp"
+#include "chaotic/atlas/heartbeat_payload.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -126,6 +127,11 @@ int main() {
   ATLAS_CHECK(eventKindName(static_cast<EventKind>(255)).empty());
   ATLAS_CHECK(!eventKindFromName("player.teleport").has_value());
   ATLAS_CHECK(!eventKindFromName("").has_value());
+
+  const auto onlineHeartbeat = makeHeartbeatPayload("Atlas 1.71", "0.2.0", true, 12);
+  ATLAS_CHECK(onlineHeartbeat == R"({"game":"atlas","serverVersion":"Atlas 1.71","adapterVersion":"0.2.0","online":true,"playerCount":12})");
+  const auto offlineHeartbeat = makeHeartbeatPayload("Atlas \"1.71\"\nBuild", "0.2.0", false, 0);
+  ATLAS_CHECK(offlineHeartbeat == R"({"game":"atlas","serverVersion":"Atlas \"1.71\"\nBuild","adapterVersion":"0.2.0","online":false,"playerCount":0})");
 
   return EXIT_SUCCESS;
 }
