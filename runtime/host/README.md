@@ -58,6 +58,16 @@ Startup exceptions move the plugin to terminal `failed`; plugins own cleanup of 
 
 <!-- /coderabbit-ai-generated:v1 -->
 
+## Core event outbox consumer
+
+`createCoreEventOutboxConsumer` is a host-owned delivery boundary for Core's server-scoped event outbox. Configure it with the Core API URL, a service credential authorized for `events.claim` and `events.ack`, the server UUID, and a host-supplied `processEvent(event)` callback. The callback receives the claimed outbox record, including the normalized game event in `event.payload`; it does not receive Core credentials.
+
+`pollOnce()` claims a bounded batch and processes records sequentially. Successful callbacks are acknowledged as `delivered`. Callback failures are acknowledged as `failed`, allowing Core's existing retry schedule to make the event available later. If acknowledgement cannot be confirmed, the consumer reports the affected outbox record and leaves lease expiry to permit redelivery.
+
+Delivery is **at-least-once**, not exactly-once. Handlers must be idempotent and use the outbox record ID (and the source event/correlation identifiers where appropriate) to avoid repeating side effects. Keep handler execution comfortably within the configured lease duration; this API currently exposes no lease-renewal operation. Do not run overlapping `pollOnce()` calls on one consumer instance. The host owns the credential and should route events to trusted modules without exposing that credential or blocking game-critical threads.
+
+This consumer does not discover plugins, invoke native ATLAS callbacks, or prove ATLAS SDK/loader compatibility.
+
 ## Development
 
 Requires Node.js 20.9 or newer.
