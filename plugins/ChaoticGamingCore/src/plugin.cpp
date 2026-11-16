@@ -153,6 +153,19 @@ std::string makeEventId(const SYSTEMTIME& value) {
     return eventId;
 }
 
+std::string toUtf8(const FString& value) {
+    const TCHAR* source = *value;
+    if (!source || *source == 0) return {};
+    const int required = WideCharToMultiByte(CP_UTF8, 0, source, -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 1) return {};
+    std::string converted(static_cast<std::size_t>(required), '\0');
+    const int written = WideCharToMultiByte(CP_UTF8, 0, source, -1,
+        converted.data(), required, nullptr, nullptr);
+    if (written <= 0) return {};
+    converted.resize(static_cast<std::size_t>(written - 1));
+    return converted;
+}
+
 bool makePlayerLifecycleEvent(const char* eventType, AController* controller,
     bool isFromLogin, PendingEvent& event) noexcept {
     if (!g_eventPublishingConfigured || !controller) return false;
@@ -163,7 +176,7 @@ bool makePlayerLifecycleEvent(const char* eventType, AController* controller,
         std::string playerName;
         if (APlayerState* playerState = controller->PlayerStateField()) {
             const FString name = playerState->PlayerNameField();
-            playerName = *name;
+            playerName = toUtf8(name);
         }
         const uint64 gamePlayerId = ArkApi::IApiUtils::GetPlayerID(controller);
         SYSTEMTIME now{};
