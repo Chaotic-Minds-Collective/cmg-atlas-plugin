@@ -37,6 +37,9 @@ target_compile_features(ChaoticGamingCore PRIVATE cxx_std_17)
 target_compile_definitions(ChaoticGamingCore PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
+  # Match the pinned SDK's Unicode character set for Windows and CRT headers.
+  UNICODE
+  _UNICODE
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
   CG_ATLAS_API_VERSION="1.7"
 )
