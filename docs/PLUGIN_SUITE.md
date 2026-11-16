@@ -55,3 +55,15 @@ Each module repository contains its own README and `docs/IMPLEMENTATION_PLAN.md`
 7. Run cross-module integration, security and multi-grid failure/recovery tests.
 
 No production server changes, paid services, live payments or public binary releases are authorized by this planning document.
+
+## Implementation status — 2026-11-16
+
+The API 1.71 SDK pin/build correction and Core server-scoped game-event ingestion groundwork have been merged. The following product-module foundations are now in reviewable PRs:
+
+- **Native adapter:** Windows x64 API 1.71 build, readiness/player-count heartbeat, and opt-in `player.joined`/`player.left` event publishing. Event IDs include server identity. Heartbeats use a monotonic deadline independent of event traffic. Hooks remain disabled by default; if enabled, the DLL is pinned for process lifetime and plugin unload disables publishing while leaving detours as passthrough until server restart. Isolated runtime validation is still required.
+- **Commerce:** read-only Core catalogue, entitlement and order-history client. Core has no wallet-balance endpoint yet; no checkout, payment, wallet bypass, or item delivery is included.
+- **World:** versioned observe-only policy schema and read-only dry-run diff. No ATLAS enforcement or config mutation is enabled.
+- **Adventures:** quest schema and offline reducer consuming Core's actual `game.event.received` outbox record shape for the two currently emitted player events. Progress remains in memory; durable persistence and reward delivery are pending.
+- **GridForge:** implementation remains gated on an authoritative, versioned ATLAS grid JSON sample/schema and a provenance/license review of map assets. Do not infer the native schema from the cluster-launch PowerShell script.
+
+These are foundations, not a claim that the entire suite is production-complete. No PRs in this implementation batch have been merged, and no live ATLAS server has been modified.
