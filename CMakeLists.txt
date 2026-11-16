@@ -5,10 +5,34 @@ if(NOT WIN32)
   message(FATAL_ERROR "The initial ATLAS plugin target is Windows-only.")
 endif()
 
-add_library(ChaoticGamingCore SHARED
-  plugins/ChaoticGamingCore/src/plugin.cpp
+# Pin the ATLAS API source and import library together; do not track a moving branch.
+include(FetchContent)
+set(CMG_ATLAS_API_COMMIT "144ee5301177428894eda4c318276f52f051d3f5" CACHE STRING "Pinned cmg-atlas-api commit")
+FetchContent_Declare(cmg_atlas_api
+  GIT_REPOSITORY https://github.com/Chaotic-Minds-Collective/cmg-atlas-api.git
+  GIT_TAG ${CMG_ATLAS_API_COMMIT}
+  GIT_PROGRESS TRUE
+  SOURCE_SUBDIR _cmake_not_used
+)
+FetchContent_MakeAvailable(cmg_atlas_api)
+
+if(NOT EXISTS "${cmg_atlas_api_SOURCE_DIR}/version/Core/Public/API/Atlas/Atlas.h")
+  message(FATAL_ERROR "Pinned ATLAS SDK headers were not found.")
+endif()
+if(NOT EXISTS "${cmg_atlas_api_SOURCE_DIR}/out_lib/AtlasApi.lib")
+  message(FATAL_ERROR "Pinned ATLAS SDK import library was not found.")
+endif()
+
+add_library(cmg_atlas_sdk_import UNKNOWN IMPORTED GLOBAL)
+set_target_properties(cmg_atlas_sdk_import PROPERTIES
+  IMPORTED_LOCATION "${cmg_atlas_api_SOURCE_DIR}/out_lib/AtlasApi.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${cmg_atlas_api_SOURCE_DIR}/version/Core/Public"
 )
 
+add_library(ChaoticGamingCore SHARED
+  plugins/ChaoticGamingCore/src/plugin.cpp
+  plugins/ChaoticGamingCore/src/atlas_sdk_link_check.cpp
+)
 target_compile_features(ChaoticGamingCore PRIVATE cxx_std_17)
 target_compile_definitions(ChaoticGamingCore PRIVATE
   WIN32_LEAN_AND_MEAN
@@ -16,7 +40,7 @@ target_compile_definitions(ChaoticGamingCore PRIVATE
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
   CG_ATLAS_API_VERSION="1.7"
 )
-target_link_libraries(ChaoticGamingCore PRIVATE winhttp)
+target_link_libraries(ChaoticGamingCore PRIVATE cmg_atlas_sdk_import winhttp)
 
 set_target_properties(ChaoticGamingCore PROPERTIES
   PREFIX ""
