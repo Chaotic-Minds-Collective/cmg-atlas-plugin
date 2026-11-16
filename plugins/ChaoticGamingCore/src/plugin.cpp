@@ -145,12 +145,8 @@ std::string formatUtcTimestamp(const SYSTEMTIME& value) {
 }
 
 std::string makeEventId(const SYSTEMTIME& value) {
-    char eventId[96]{};
     const auto sequence = g_eventSequence.fetch_add(1, std::memory_order_relaxed);
-    std::snprintf(eventId, sizeof(eventId), "atlas-%04u%02u%02uT%02u%02u%02u%03uZ-%llu",
-        value.wYear, value.wMonth, value.wDay, value.wHour, value.wMinute,
-        value.wSecond, value.wMilliseconds, sequence);
-    return eventId;
+    return chaotic::atlas::makeGameEventId(g_serverId, formatUtcTimestamp(value), sequence);
 }
 
 std::string toUtf8(const FString& value) {
