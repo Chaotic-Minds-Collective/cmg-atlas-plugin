@@ -38,6 +38,8 @@ struct PendingEvent {
     std::string payloadJson;
 };
 
+enum class EventPublishResult { Drained, RetryLater, HeartbeatDue };
+
 using HandleNewPlayerFunction = bool(CG_CALL*)(AShooterGameMode*, AShooterPlayerController*, UPrimalPlayerData*, AShooterCharacter*, bool);
 using LogoutFunction = void(CG_CALL*)(AShooterGameMode*, AController*);
 HandleNewPlayerFunction g_originalHandleNewPlayer = nullptr;
@@ -59,9 +61,10 @@ std::string g_clusterId;
 std::string g_gridId;
 std::string g_serverBuild{"unknown"};
 unsigned int g_intervalSeconds{60};
-bool g_eventPublishingConfigured{false};
+std::atomic<bool> g_eventPublishingConfigured{false};
 bool g_joinHookInstalled{false};
 bool g_logoutHookInstalled{false};
+bool g_hooksPinnedPassthrough{false};
 std::atomic<bool> g_eventRequested{false};
 std::atomic<unsigned long long> g_eventSequence{0};
 std::mutex g_eventMutex;
@@ -164,7 +167,7 @@ std::string toUtf8(const FString& value) {
 
 bool makePlayerLifecycleEvent(const char* eventType, AController* controller,
     bool isFromLogin, PendingEvent& event) noexcept {
-    if (!g_eventPublishingConfigured || !controller) return false;
+    if (!g_eventPublishingConfigured.load(std::memory_order_acquire) || !controller) return false;
     try {
         const uint64 platformId = ArkApi::IApiUtils::GetSteamIdFromController(controller);
         if (platformId == 0) return false;
@@ -379,12 +382,16 @@ bool sendCoreEvent(const PendingEvent& event) {
     return sendCorePost(requestPath, chaotic::atlas::makeGameEventRequestBody(request), "ATLAS player event");
 }
 
-void publishPendingEvents() noexcept {
+EventPublishResult publishPendingEvents(const std::chrono::steady_clock::time_point& nextHeartbeat) noexcept {
     while (!g_stop.load(std::memory_order_relaxed)) {
+        if (std::chrono::steady_clock::now() >= nextHeartbeat ||
+            g_heartbeatRequested.load(std::memory_order_acquire)) {
+            return EventPublishResult::HeartbeatDue;
+        }
         PendingEvent event;
         {
             std::lock_guard<std::mutex> lock(g_eventMutex);
-            if (g_eventQueue.empty()) return;
+            if (g_eventQueue.empty()) return EventPublishResult::Drained;
             event = std::move(g_eventQueue.front());
             g_eventQueue.pop_front();
         }
@@ -397,76 +404,105 @@ void publishPendingEvents() noexcept {
         if (!accepted) {
             std::lock_guard<std::mutex> lock(g_eventMutex);
             g_eventQueue.push_front(std::move(event));
-            return;
+            return EventPublishResult::RetryLater;
         }
     }
+    return EventPublishResult::Drained;
+}
+
+bool pinPluginModule() noexcept {
+    HMODULE module = nullptr;
+    const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN;
+    return GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&handleNewPlayerHook), &module) != FALSE;
 }
 
 void startPlayerEventHooks() {
+    if (g_hooksPinnedPassthrough) {
+        logMessage("[Chaotic Gaming Core] Player hooks are pinned in passthrough mode after incomplete setup; restart the server to retry.\n");
+        return;
+    }
+    if (g_joinHookInstalled && g_logoutHookInstalled) {
+        logMessage("[Chaotic Gaming Core] Player lifecycle hooks are already attached; reusing process-lifetime hooks.\n");
+        return;
+    }
+    if (g_joinHookInstalled || g_logoutHookInstalled) {
+        g_hooksPinnedPassthrough = true;
+        g_eventPublishingConfigured.store(false, std::memory_order_release);
+        logMessage("[Chaotic Gaming Core] CRITICAL: partial player hooks remain attached in passthrough mode; restart the server to clear them.\n");
+        return;
+    }
     if (g_stop.load(std::memory_order_relaxed)) {
         logMessage("[Chaotic Gaming Core] Player event hooks skipped because Core integration is not configured.\n");
         return;
     }
-    if (!g_eventPublishingConfigured) {
-        logMessage("[Chaotic Gaming Core] Player events disabled; configure a valid cluster UUID and grid ID.\n");
+    if (!g_eventPublishingConfigured.load(std::memory_order_acquire)) {
+        logMessage("[Chaotic Gaming Core] Player events disabled; verify cluster/grid configuration and CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS=1.\n");
         return;
     }
-    if (readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") != "1") {
-        logMessage("[Chaotic Gaming Core] Player event hooks are disabled by default; opt in only after isolated-server validation.\n");
+    if (!pinPluginModule()) {
+        g_eventPublishingConfigured.store(false, std::memory_order_release);
+        logMessage("[Chaotic Gaming Core] CRITICAL: could not pin adapter module; player hooks were not installed.\n");
         return;
     }
 
     auto& hooks = ArkApi::GetHooks();
-    g_joinHookInstalled = hooks.SetHook("AShooterGameMode.HandleNewPlayer",
+    const bool joinSet = hooks.SetHook("AShooterGameMode.HandleNewPlayer",
         reinterpret_cast<LPVOID>(&handleNewPlayerHook), &g_originalHandleNewPlayer);
-    g_logoutHookInstalled = hooks.SetHook("AShooterGameMode.Logout",
+    g_joinHookInstalled = joinSet || g_originalHandleNewPlayer != nullptr;
+    const bool logoutSet = hooks.SetHook("AShooterGameMode.Logout",
         reinterpret_cast<LPVOID>(&logoutHook), &g_originalLogout);
-    if (!g_joinHookInstalled || !g_logoutHookInstalled || !g_originalHandleNewPlayer || !g_originalLogout) {
-        if (g_logoutHookInstalled) hooks.DisableHook("AShooterGameMode.Logout", reinterpret_cast<LPVOID>(&logoutHook));
-        if (g_joinHookInstalled) hooks.DisableHook("AShooterGameMode.HandleNewPlayer", reinterpret_cast<LPVOID>(&handleNewPlayerHook));
-        g_joinHookInstalled = false;
-        g_logoutHookInstalled = false;
-        g_originalHandleNewPlayer = nullptr;
-        g_originalLogout = nullptr;
-        logMessage("[Chaotic Gaming Core] Player lifecycle hooks could not both be installed; event publishing remains disabled.\n");
+    g_logoutHookInstalled = logoutSet || g_originalLogout != nullptr;
+
+    if (!joinSet || !logoutSet || !g_originalHandleNewPlayer || !g_originalLogout) {
+        g_eventPublishingConfigured.store(false, std::memory_order_release);
+        g_hooksPinnedPassthrough = true;
+        logMessage("[Chaotic Gaming Core] CRITICAL: both player hooks were not installed; any installed detours remain passthrough in the pinned module until server restart.\n");
         return;
     }
-    logMessage("[Chaotic Gaming Core] ATLAS player join/leave hooks installed.\n");
+    logMessage("[Chaotic Gaming Core] ATLAS player join/leave hooks installed; adapter module pinned for safe process-lifetime callbacks.\n");
 }
 
 void stopPlayerEventHooks() noexcept {
-    if (!g_joinHookInstalled && !g_logoutHookInstalled) return;
-    try {
-        auto& hooks = ArkApi::GetHooks();
-        if (g_logoutHookInstalled) hooks.DisableHook("AShooterGameMode.Logout", reinterpret_cast<LPVOID>(&logoutHook));
-        if (g_joinHookInstalled) hooks.DisableHook("AShooterGameMode.HandleNewPlayer", reinterpret_cast<LPVOID>(&handleNewPlayerHook));
-    } catch (...) {
-        logMessage("[Chaotic Gaming Core] Player lifecycle hooks could not be removed cleanly.\n");
+    g_eventPublishingConfigured.store(false, std::memory_order_release);
+    if (g_joinHookInstalled || g_logoutHookInstalled) {
+        logMessage("[Chaotic Gaming Core] Player event publishing disabled; process-lifetime hooks remain passthrough until server restart.\n");
     }
-    g_joinHookInstalled = false;
-    g_logoutHookInstalled = false;
-    g_originalHandleNewPlayer = nullptr;
-    g_originalLogout = nullptr;
 }
 
 void heartbeatLoop() noexcept {
-    while (!g_stop.load()) {
+    auto nextHeartbeat = std::chrono::steady_clock::now();
+    while (!g_stop.load(std::memory_order_relaxed)) {
         try {
-            if (g_heartbeatRequested.exchange(false, std::memory_order_acq_rel)) {
-                sendCoreHeartbeat();
+            const bool heartbeatRequested = g_heartbeatRequested.exchange(false, std::memory_order_acq_rel);
+            if (heartbeatRequested || std::chrono::steady_clock::now() >= nextHeartbeat) {
+                try {
+                    sendCoreHeartbeat();
+                } catch (...) {
+                    logMessage("[Chaotic Gaming Core] Unexpected heartbeat error; it will retry after the configured interval.\n");
+                }
+                nextHeartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(g_intervalSeconds);
             }
+
+            bool deferEventRetry = false;
             if (g_eventRequested.exchange(false, std::memory_order_acq_rel) || hasPendingEvents()) {
-                publishPendingEvents();
+                deferEventRetry = publishPendingEvents(nextHeartbeat) == EventPublishResult::RetryLater;
+            }
+
+            std::unique_lock<std::mutex> lock(g_waitMutex);
+            if (deferEventRetry) {
+                // Ignore new event wakeups until the next heartbeat deadline; this prevents a failed event
+                // at the front of the queue from causing a tight retry loop.
+                g_waitCondition.wait_until(lock, nextHeartbeat,
+                    [] { return g_stop.load() || g_heartbeatRequested.load(); });
+            } else {
+                g_waitCondition.wait_until(lock, nextHeartbeat,
+                    [] { return g_stop.load() || g_heartbeatRequested.load() || g_eventRequested.load(); });
             }
         } catch (...) {
             logMessage("[Chaotic Gaming Core] Unexpected integration worker error; it will retry.\n");
-        }
-
-        std::unique_lock<std::mutex> lock(g_waitMutex);
-        const bool awakened = g_waitCondition.wait_for(lock, std::chrono::seconds(g_intervalSeconds),
-            [] { return g_stop.load() || g_heartbeatRequested.load() || g_eventRequested.load(); });
-        if (!awakened && !g_stop.load()) {
-            g_heartbeatRequested.store(true, std::memory_order_release);
+            std::unique_lock<std::mutex> lock(g_waitMutex);
+            g_waitCondition.wait_for(lock, std::chrono::seconds(g_intervalSeconds),
+                [] { return g_stop.load() || g_heartbeatRequested.load(); });
         }
     }
 }
@@ -482,7 +518,7 @@ void startHeartbeat() {
     g_serverId = readEnvironment("CHAOTIC_CORE_SERVER_ID");
     g_clusterId = readEnvironment("CHAOTIC_CORE_CLUSTER_ID");
     g_gridId = readEnvironment("CHAOTIC_CORE_GRID_ID");
-    g_eventPublishingConfigured = isUuid(g_clusterId) && isGridId(g_gridId);
+    g_eventPublishingConfigured.store(!g_hooksPinnedPassthrough && isUuid(g_clusterId) && isGridId(g_gridId) && readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") == "1", std::memory_order_release);
     const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
     g_serverBuild = serverBuild.empty() ? "unknown" : serverBuild;
 
