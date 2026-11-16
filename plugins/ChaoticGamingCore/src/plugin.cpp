@@ -20,7 +20,7 @@
 #define CG_PLUGIN_VERSION "0.2.0"
 #endif
 #ifndef CG_ATLAS_API_VERSION
-#define CG_ATLAS_API_VERSION "1.71"
+#define CG_ATLAS_API_VERSION "1.7"
 #endif
 
 namespace {

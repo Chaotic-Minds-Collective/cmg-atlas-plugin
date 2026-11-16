@@ -14,7 +14,7 @@ target_compile_definitions(ChaoticGamingCore PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
-  CG_ATLAS_API_VERSION="1.71"
+  CG_ATLAS_API_VERSION="1.7"
 )
 target_link_libraries(ChaoticGamingCore PRIVATE winhttp)
 
