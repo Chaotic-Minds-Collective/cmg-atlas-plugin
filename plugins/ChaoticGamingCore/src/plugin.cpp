@@ -2,18 +2,22 @@
 #include <Windows.h>
 #include <WinHttp.h>
 #include <ICommands.h>
+#include <IHooks.h>
 #include <Atlas/AtlasApiUtils.h>
 #include "chaotic/atlas/heartbeat_payload.hpp"
+#include "chaotic/atlas/event_payload.hpp"
 #include <atomic>
 #include <cctype>
 #include <cwctype>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #define CG_EXPORT extern "C" __declspec(dllexport)
@@ -27,6 +31,18 @@
 #endif
 
 namespace {
+struct PendingEvent {
+    std::string eventId;
+    std::string eventType;
+    std::string occurredAt;
+    std::string payloadJson;
+};
+
+using HandleNewPlayerFunction = bool(CG_CALL*)(AShooterGameMode*, AShooterPlayerController*, UPrimalPlayerData*, AShooterCharacter*, bool);
+using LogoutFunction = void(CG_CALL*)(AShooterGameMode*, AController*);
+HandleNewPlayerFunction g_originalHandleNewPlayer = nullptr;
+LogoutFunction g_originalLogout = nullptr;
+
 constexpr char kPluginName[] = "Chaotic Gaming Core";
 constexpr char kAdapterVersion[] = CG_PLUGIN_VERSION;
 
@@ -39,8 +55,18 @@ std::thread g_heartbeatThread;
 std::string g_coreApiUrl;
 std::string g_serviceToken;
 std::string g_serverId;
+std::string g_clusterId;
+std::string g_gridId;
 std::string g_serverBuild{"unknown"};
 unsigned int g_intervalSeconds{60};
+bool g_eventPublishingConfigured{false};
+bool g_joinHookInstalled{false};
+bool g_logoutHookInstalled{false};
+std::atomic<bool> g_eventRequested{false};
+std::atomic<unsigned long long> g_eventSequence{0};
+std::mutex g_eventMutex;
+std::deque<PendingEvent> g_eventQueue;
+constexpr std::size_t kMaximumPendingEvents = 1000;
 constexpr char kServerStateCallbackId[] = "ChaoticGamingCore.ServerState";
 std::atomic<bool> g_serverReady{false};
 std::atomic<bool> g_heartbeatRequested{true};
@@ -80,15 +106,24 @@ void logLifecycle(const char* eventName) noexcept {
 }
 
 bool isUuid(const std::string& value) noexcept {
-    if (value.size() != 36) return false;
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') return false;
     for (std::size_t i = 0; i < value.size(); ++i) {
-        if (i == 8 || i == 13 || i == 18 || i == 23) {
-            if (value[i] != '-') return false;
-        } else if (!std::isxdigit(static_cast<unsigned char>(value[i]))) {
-            return false;
-        }
+        if (i == 8 || i == 13 || i == 18 || i == 23) continue;
+        if (!std::isxdigit(static_cast<unsigned char>(value[i]))) return false;
     }
-    return true;
+    const char version = value[14];
+    const char variant = static_cast<char>(std::tolower(static_cast<unsigned char>(value[19])));
+    return version >= '1' && version <= '8' &&
+        (variant == '8' || variant == '9' || variant == 'a' || variant == 'b');
+}
+
+bool isGridId(const std::string& value) noexcept {
+    if (value.empty() || value.size() > 200) return false;
+    for (const unsigned char ch : value) {
+        if (std::isspace(ch) == 0) return true;
+    }
+    return false;
 }
 
 bool isServiceToken(const std::string& value) noexcept {
@@ -99,6 +134,93 @@ bool isServiceToken(const std::string& value) noexcept {
         if (!std::isalnum(ch) && ch != '_' && ch != '-') return false;
     }
     return true;
+}
+
+std::string formatUtcTimestamp(const SYSTEMTIME& value) {
+    char timestamp[40]{};
+    std::snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+        value.wYear, value.wMonth, value.wDay, value.wHour, value.wMinute,
+        value.wSecond, value.wMilliseconds);
+    return timestamp;
+}
+
+std::string makeEventId(const SYSTEMTIME& value) {
+    char eventId[96]{};
+    const auto sequence = g_eventSequence.fetch_add(1, std::memory_order_relaxed);
+    std::snprintf(eventId, sizeof(eventId), "atlas-%04u%02u%02uT%02u%02u%02u%03uZ-%llu",
+        value.wYear, value.wMonth, value.wDay, value.wHour, value.wMinute,
+        value.wSecond, value.wMilliseconds, sequence);
+    return eventId;
+}
+
+bool makePlayerLifecycleEvent(const char* eventType, AController* controller,
+    bool isFromLogin, PendingEvent& event) noexcept {
+    if (!g_eventPublishingConfigured || !controller) return false;
+    try {
+        const uint64 platformId = ArkApi::IApiUtils::GetSteamIdFromController(controller);
+        if (platformId == 0) return false;
+
+        std::string playerName;
+        if (APlayerState* playerState = controller->PlayerStateField()) {
+            const FString name = playerState->PlayerNameField();
+            playerName = *name;
+        }
+        const uint64 gamePlayerId = ArkApi::IApiUtils::GetPlayerID(controller);
+        SYSTEMTIME now{};
+        GetSystemTime(&now);
+        event.eventId = makeEventId(now);
+        event.eventType = eventType;
+        event.occurredAt = formatUtcTimestamp(now);
+        event.payloadJson = chaotic::atlas::makePlayerLifecyclePayload(
+            std::to_string(platformId), playerName, std::to_string(gamePlayerId), isFromLogin);
+        return true;
+    } catch (...) {
+        logMessage("[Chaotic Gaming Core] Could not capture ATLAS player identity for an event.\n");
+        return false;
+    }
+}
+
+void enqueueEvent(PendingEvent event) noexcept {
+    try {
+        {
+            std::lock_guard<std::mutex> lock(g_eventMutex);
+            if (g_eventQueue.size() >= kMaximumPendingEvents) {
+                logMessage("[Chaotic Gaming Core] Event queue full; newest player event dropped.\n");
+                return;
+            }
+            g_eventQueue.push_back(std::move(event));
+        }
+        g_eventRequested.store(true, std::memory_order_release);
+        g_waitCondition.notify_all();
+    } catch (...) {
+        logMessage("[Chaotic Gaming Core] Could not queue an ATLAS player event.\n");
+    }
+}
+
+bool hasPendingEvents() noexcept {
+    std::lock_guard<std::mutex> lock(g_eventMutex);
+    return !g_eventQueue.empty();
+}
+
+bool CG_CALL handleNewPlayerHook(AShooterGameMode* gameMode,
+    AShooterPlayerController* newPlayer, UPrimalPlayerData* playerData,
+    AShooterCharacter* playerCharacter, bool isFromLogin) noexcept {
+    const bool accepted = g_originalHandleNewPlayer &&
+        g_originalHandleNewPlayer(gameMode, newPlayer, playerData, playerCharacter, isFromLogin);
+    if (accepted && newPlayer) {
+        PendingEvent event;
+        if (makePlayerLifecycleEvent("player.joined", newPlayer, isFromLogin, event)) {
+            enqueueEvent(std::move(event));
+        }
+    }
+    return accepted;
+}
+
+void CG_CALL logoutHook(AShooterGameMode* gameMode, AController* exiting) noexcept {
+    PendingEvent event;
+    const bool captured = makePlayerLifecycleEvent("player.left", exiting, false, event);
+    if (g_originalLogout) g_originalLogout(gameMode, exiting);
+    if (captured) enqueueEvent(std::move(event));
 }
 
 struct WinHttpHandle {
@@ -133,7 +255,7 @@ void refreshServerState() noexcept {
     }
 }
 
-bool sendCoreHeartbeat() {
+bool sendCorePost(const std::wstring& requestPath, const std::string& body, const char* operation) {
     std::wstring wideUrl(g_coreApiUrl.begin(), g_coreApiUrl.end());
     URL_COMPONENTS parts{};
     parts.dwStructSize = sizeof(parts);
@@ -145,16 +267,14 @@ bool sendCoreHeartbeat() {
     parts.dwExtraInfoLength = static_cast<DWORD>(-1);
 
     if (!WinHttpCrackUrl(wideUrl.c_str(), 0, 0, &parts)) {
-        logMessage("[Chaotic Gaming Core] Invalid CORE_API_URL; heartbeat skipped.\n");
+        logMessage("[Chaotic Gaming Core] Invalid CORE_API_URL; Core request skipped.\n");
         return false;
     }
     const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
     const std::wstring basePath(parts.lpszUrlPath, parts.dwUrlPathLength);
     if ((!secure && parts.nScheme != INTERNET_SCHEME_HTTP) ||
-        (!basePath.empty() && basePath != L"/") ||
-        parts.dwExtraInfoLength != 0 ||
-        parts.dwUserNameLength != 0 ||
-        parts.dwPasswordLength != 0) {
+        (!basePath.empty() && basePath != L"/") || parts.dwExtraInfoLength != 0 ||
+        parts.dwUserNameLength != 0 || parts.dwPasswordLength != 0) {
         logMessage("[Chaotic Gaming Core] CORE_API_URL must be an HTTP(S) origin without credentials, path or query.\n");
         return false;
     }
@@ -168,19 +288,10 @@ bool sendCoreHeartbeat() {
         logMessage("[Chaotic Gaming Core] HTTPS is required except for localhost development.\n");
         return false;
     }
-    const std::wstring serverId(g_serverId.begin(), g_serverId.end());
-    const std::wstring requestPath = L"/integrations/servers/" + serverId + L"/heartbeat";
+
     const std::wstring headers =
         L"Authorization: Bearer " + std::wstring(g_serviceToken.begin(), g_serviceToken.end()) +
         L"\r\nContent-Type: application/json\r\nAccept: application/json\r\n";
-
-    const std::string body = chaotic::atlas::makeHeartbeatPayload(
-        g_serverBuild,
-        kAdapterVersion,
-        g_serverReady.load(std::memory_order_relaxed),
-        g_playerCount.load(std::memory_order_relaxed)
-    );
-
     WinHttpHandle session(WinHttpOpen(L"ChaoticGamingAtlasAdapter/0.2.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session.value) {
@@ -188,7 +299,7 @@ bool sendCoreHeartbeat() {
         return false;
     }
     if (!WinHttpSetTimeouts(session.value, 3000, 3000, 3000, 3000)) {
-        logMessage("[Chaotic Gaming Core] WinHTTP timeouts could not be configured; heartbeat skipped.\n");
+        logMessage("[Chaotic Gaming Core] WinHTTP timeouts could not be configured; request skipped.\n");
         return false;
     }
 
@@ -197,34 +308,26 @@ bool sendCoreHeartbeat() {
         logMessage("[Chaotic Gaming Core] Core API connection could not be opened.\n");
         return false;
     }
-
     const DWORD flags = secure ? WINHTTP_FLAG_SECURE : 0;
     WinHttpHandle request(WinHttpOpenRequest(connection.value, L"POST", requestPath.c_str(),
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
     if (!request.value) {
-        logMessage("[Chaotic Gaming Core] Heartbeat request could not be created.\n");
+        logMessage("[Chaotic Gaming Core] Core request could not be created.\n");
         return false;
     }
 
-    // Never forward the service credential or heartbeat body through a redirect.
     DWORD disableRedirects = WINHTTP_DISABLE_REDIRECTS;
     if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE,
         &disableRedirects, sizeof(disableRedirects))) {
-        logMessage("[Chaotic Gaming Core] Redirect protection could not be enabled; heartbeat skipped.\n");
+        logMessage("[Chaotic Gaming Core] Redirect protection could not be enabled; request skipped.\n");
         return false;
     }
 
-    const BOOL sent = WinHttpSendRequest(
-        request.value,
-        headers.c_str(),
-        static_cast<DWORD>(headers.size()),
-        const_cast<char*>(body.data()),
-        static_cast<DWORD>(body.size()),
-        static_cast<DWORD>(body.size()),
-        0
-    );
+    const BOOL sent = WinHttpSendRequest(request.value, headers.c_str(),
+        static_cast<DWORD>(headers.size()), const_cast<char*>(body.data()),
+        static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0);
     if (!sent || !WinHttpReceiveResponse(request.value, nullptr)) {
-        logMessage("[Chaotic Gaming Core] Heartbeat transport failed; will retry next interval.\n");
+        logMessage("[Chaotic Gaming Core] Core request transport failed; it will retry.\n");
         return false;
     }
 
@@ -234,32 +337,128 @@ bool sendCoreHeartbeat() {
         WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
         WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX) ||
         statusCode < 200 || statusCode >= 300) {
-        char message[160]{};
+        char message[192]{};
         std::snprintf(message, sizeof(message),
-            "[Chaotic Gaming Core] Heartbeat rejected (HTTP %lu); will retry.\n",
-            static_cast<unsigned long>(statusCode));
+            "[Chaotic Gaming Core] %s rejected (HTTP %lu); it will retry.\n",
+            operation, static_cast<unsigned long>(statusCode));
         logMessage(message);
         return false;
     }
 
-    logMessage("[Chaotic Gaming Core] ATLAS heartbeat accepted.\n");
+    char message[128]{};
+    std::snprintf(message, sizeof(message), "[Chaotic Gaming Core] %s accepted.\n", operation);
+    logMessage(message);
     return true;
+}
+
+bool sendCoreHeartbeat() {
+    const std::wstring serverId(g_serverId.begin(), g_serverId.end());
+    const std::wstring requestPath = L"/integrations/servers/" + serverId + L"/heartbeat";
+    const std::string body = chaotic::atlas::makeHeartbeatPayload(
+        g_serverBuild, kAdapterVersion,
+        g_serverReady.load(std::memory_order_relaxed),
+        g_playerCount.load(std::memory_order_relaxed));
+    return sendCorePost(requestPath, body, "ATLAS heartbeat");
+}
+
+bool sendCoreEvent(const PendingEvent& event) {
+    const std::wstring serverId(g_serverId.begin(), g_serverId.end());
+    const std::wstring requestPath = L"/integrations/servers/" + serverId + L"/events";
+    const chaotic::atlas::GameEventRequest request{
+        event.eventId, event.eventType, event.occurredAt,
+        g_clusterId, g_gridId, g_serverId, event.payloadJson};
+    return sendCorePost(requestPath, chaotic::atlas::makeGameEventRequestBody(request), "ATLAS player event");
+}
+
+void publishPendingEvents() noexcept {
+    while (!g_stop.load(std::memory_order_relaxed)) {
+        PendingEvent event;
+        {
+            std::lock_guard<std::mutex> lock(g_eventMutex);
+            if (g_eventQueue.empty()) return;
+            event = std::move(g_eventQueue.front());
+            g_eventQueue.pop_front();
+        }
+        bool accepted = false;
+        try {
+            accepted = sendCoreEvent(event);
+        } catch (...) {
+            logMessage("[Chaotic Gaming Core] Unexpected game-event publishing error; event retained for retry.\n");
+        }
+        if (!accepted) {
+            std::lock_guard<std::mutex> lock(g_eventMutex);
+            g_eventQueue.push_front(std::move(event));
+            return;
+        }
+    }
+}
+
+void startPlayerEventHooks() {
+    if (g_stop.load(std::memory_order_relaxed)) {
+        logMessage("[Chaotic Gaming Core] Player event hooks skipped because Core integration is not configured.\n");
+        return;
+    }
+    if (!g_eventPublishingConfigured) {
+        logMessage("[Chaotic Gaming Core] Player events disabled; configure a valid cluster UUID and grid ID.\n");
+        return;
+    }
+    if (readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") != "1") {
+        logMessage("[Chaotic Gaming Core] Player event hooks are disabled by default; opt in only after isolated-server validation.\n");
+        return;
+    }
+
+    auto& hooks = ArkApi::GetHooks();
+    g_joinHookInstalled = hooks.SetHook("AShooterGameMode.HandleNewPlayer",
+        reinterpret_cast<LPVOID>(&handleNewPlayerHook), &g_originalHandleNewPlayer);
+    g_logoutHookInstalled = hooks.SetHook("AShooterGameMode.Logout",
+        reinterpret_cast<LPVOID>(&logoutHook), &g_originalLogout);
+    if (!g_joinHookInstalled || !g_logoutHookInstalled) {
+        if (g_logoutHookInstalled) hooks.DisableHook("AShooterGameMode.Logout", reinterpret_cast<LPVOID>(&logoutHook));
+        if (g_joinHookInstalled) hooks.DisableHook("AShooterGameMode.HandleNewPlayer", reinterpret_cast<LPVOID>(&handleNewPlayerHook));
+        g_joinHookInstalled = false;
+        g_logoutHookInstalled = false;
+        g_originalHandleNewPlayer = nullptr;
+        g_originalLogout = nullptr;
+        logMessage("[Chaotic Gaming Core] Player lifecycle hooks could not both be installed; event publishing remains disabled.\n");
+        return;
+    }
+    logMessage("[Chaotic Gaming Core] ATLAS player join/leave hooks installed.\n");
+}
+
+void stopPlayerEventHooks() noexcept {
+    if (!g_joinHookInstalled && !g_logoutHookInstalled) return;
+    try {
+        auto& hooks = ArkApi::GetHooks();
+        if (g_logoutHookInstalled) hooks.DisableHook("AShooterGameMode.Logout", reinterpret_cast<LPVOID>(&logoutHook));
+        if (g_joinHookInstalled) hooks.DisableHook("AShooterGameMode.HandleNewPlayer", reinterpret_cast<LPVOID>(&handleNewPlayerHook));
+    } catch (...) {
+        logMessage("[Chaotic Gaming Core] Player lifecycle hooks could not be removed cleanly.\n");
+    }
+    g_joinHookInstalled = false;
+    g_logoutHookInstalled = false;
+    g_originalHandleNewPlayer = nullptr;
+    g_originalLogout = nullptr;
 }
 
 void heartbeatLoop() noexcept {
     while (!g_stop.load()) {
         try {
-            if (g_heartbeatRequested.exchange(false, std::memory_order_acq_rel) ||
-                g_serverReady.load(std::memory_order_relaxed)) {
+            if (g_heartbeatRequested.exchange(false, std::memory_order_acq_rel)) {
                 sendCoreHeartbeat();
             }
+            if (g_eventRequested.exchange(false, std::memory_order_acq_rel) || hasPendingEvents()) {
+                publishPendingEvents();
+            }
         } catch (...) {
-            logMessage("[Chaotic Gaming Core] Unexpected heartbeat error; will retry.\n");
+            logMessage("[Chaotic Gaming Core] Unexpected integration worker error; it will retry.\n");
         }
 
         std::unique_lock<std::mutex> lock(g_waitMutex);
-        g_waitCondition.wait_for(lock, std::chrono::seconds(g_intervalSeconds),
-            [] { return g_stop.load() || g_heartbeatRequested.load(); });
+        const bool awakened = g_waitCondition.wait_for(lock, std::chrono::seconds(g_intervalSeconds),
+            [] { return g_stop.load() || g_heartbeatRequested.load() || g_eventRequested.load(); });
+        if (!awakened && !g_stop.load()) {
+            g_heartbeatRequested.store(true, std::memory_order_release);
+        }
     }
 }
 
@@ -272,6 +471,9 @@ void startHeartbeat() {
     g_coreApiUrl = readEnvironment("CHAOTIC_CORE_API_URL");
     g_serviceToken = readEnvironment("CHAOTIC_CORE_SERVICE_TOKEN");
     g_serverId = readEnvironment("CHAOTIC_CORE_SERVER_ID");
+    g_clusterId = readEnvironment("CHAOTIC_CORE_CLUSTER_ID");
+    g_gridId = readEnvironment("CHAOTIC_CORE_GRID_ID");
+    g_eventPublishingConfigured = isUuid(g_clusterId) && isGridId(g_gridId);
     const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
     g_serverBuild = serverBuild.empty() ? "unknown" : serverBuild;
 
@@ -309,6 +511,7 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
     try {
         std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
         startHeartbeat();
+        startPlayerEventHooks();
     } catch (...) {
         logMessage("[Chaotic Gaming Core] Heartbeat initialization failed; plugin remains loaded.\n");
     }
@@ -316,6 +519,7 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
 
 CG_EXPORT void CG_CALL Plugin_Unload() noexcept {
     std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
+    stopPlayerEventHooks();
     if (g_serverStateCallbackRegistered) {
         try {
             ArkApi::GetCommands().RemoveOnTimerCallback(FString(kServerStateCallbackId));
