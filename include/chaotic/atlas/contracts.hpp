@@ -76,6 +76,25 @@ constexpr std::string_view eventKindName(EventKind kind) noexcept {
   return {};
 }
 
+constexpr std::optional<EventKind> eventKindFromName(std::string_view name) noexcept {
+  constexpr EventKind kinds[] = {
+      EventKind::player_joined, EventKind::player_left,
+      EventKind::player_connected, EventKind::player_disconnected,
+      EventKind::player_chat, EventKind::player_died, EventKind::player_killed,
+      EventKind::character_created, EventKind::character_transferred,
+      EventKind::tribe_created, EventKind::tribe_member_joined,
+      EventKind::tribe_member_left, EventKind::tribe_updated,
+      EventKind::chat_global, EventKind::chat_tribe, EventKind::ship_sunk,
+      EventKind::ship_retrieved, EventKind::structure_destroyed,
+      EventKind::tame_created, EventKind::tame_died,
+      EventKind::server_started, EventKind::server_stopped,
+      EventKind::server_state_changed};
+  for (const auto kind : kinds) {
+    if (eventKindName(kind) == name) return kind;
+  }
+  return std::nullopt;
+}
+
 struct ServerIdentity {
   std::string cluster_id;
   std::string grid_id;

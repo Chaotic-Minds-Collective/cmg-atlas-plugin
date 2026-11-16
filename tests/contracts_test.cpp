@@ -70,8 +70,13 @@ int main() {
 
   for (const auto& [kind, expectedName] : eventNames) {
     ATLAS_CHECK(eventKindName(kind) == expectedName);
+    const auto parsed = eventKindFromName(expectedName);
+    ATLAS_CHECK(parsed.has_value());
+    ATLAS_CHECK(parsed.value() == kind);
   }
   ATLAS_CHECK(eventKindName(static_cast<EventKind>(255)).empty());
+  ATLAS_CHECK(!eventKindFromName("player.teleport").has_value());
+  ATLAS_CHECK(!eventKindFromName("").has_value());
 
   return EXIT_SUCCESS;
 }
