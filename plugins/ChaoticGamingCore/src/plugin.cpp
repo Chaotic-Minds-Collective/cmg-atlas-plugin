@@ -1,6 +1,9 @@
 #if defined(_WIN32)
 #include <Windows.h>
 #include <WinHttp.h>
+#include <ICommands.h>
+#include <Atlas/AtlasApiUtils.h>
+#include "chaotic/atlas/heartbeat_payload.hpp"
 #include <atomic>
 #include <cctype>
 #include <cwctype>
@@ -38,6 +41,11 @@ std::string g_serviceToken;
 std::string g_serverId;
 std::string g_serverBuild{"unknown"};
 unsigned int g_intervalSeconds{60};
+constexpr char kServerStateCallbackId[] = "ChaoticGamingCore.ServerState";
+std::atomic<bool> g_serverReady{false};
+std::atomic<bool> g_heartbeatRequested{true};
+std::atomic<unsigned int> g_playerCount{0};
+bool g_serverStateCallbackRegistered{false};
 
 std::string readEnvironment(const char* name) {
     const DWORD required = GetEnvironmentVariableA(name, nullptr, 0);
@@ -93,32 +101,6 @@ bool isServiceToken(const std::string& value) noexcept {
     return true;
 }
 
-std::string jsonEscape(const std::string& value) {
-    std::string escaped;
-    escaped.reserve(value.size() + 8);
-    constexpr char hex[] = "0123456789abcdef";
-    for (const unsigned char ch : value) {
-        switch (ch) {
-            case '"': escaped += "\\\""; break;
-            case '\\': escaped += "\\\\"; break;
-            case '\b': escaped += "\\b"; break;
-            case '\f': escaped += "\\f"; break;
-            case '\n': escaped += "\\n"; break;
-            case '\r': escaped += "\\r"; break;
-            case '\t': escaped += "\\t"; break;
-            default:
-                if (ch < 0x20) {
-                    escaped += "\\u00";
-                    escaped += hex[(ch >> 4) & 0x0f];
-                    escaped += hex[ch & 0x0f];
-                } else {
-                    escaped += static_cast<char>(ch);
-                }
-        }
-    }
-    return escaped;
-}
-
 struct WinHttpHandle {
     HINTERNET value{};
     ~WinHttpHandle() { if (value) WinHttpCloseHandle(value); }
@@ -126,6 +108,30 @@ struct WinHttpHandle {
     WinHttpHandle& operator=(const WinHttpHandle&) = delete;
     explicit WinHttpHandle(HINTERNET handle) : value(handle) {}
 };
+
+void refreshServerState() noexcept {
+    bool ready = false;
+    unsigned int playerCount = 0;
+    try {
+        auto& apiUtils = ArkApi::GetApiUtils();
+        if (apiUtils.GetStatus() == ArkApi::ServerStatus::Ready) {
+            if (AShooterGameMode* gameMode = apiUtils.GetShooterGameMode()) {
+                const int count = gameMode->GetNumPlayers();
+                playerCount = count > 0 ? static_cast<unsigned int>(count) : 0;
+                ready = true;
+            }
+        }
+    } catch (...) {
+        logMessage("[Chaotic Gaming Core] ATLAS state poll failed; retrying on the next timer tick.\n");
+    }
+
+    g_playerCount.store(playerCount, std::memory_order_relaxed);
+    const bool previousReady = g_serverReady.exchange(ready, std::memory_order_acq_rel);
+    if (previousReady != ready) {
+        g_heartbeatRequested.store(true, std::memory_order_release);
+        g_waitCondition.notify_all();
+    }
+}
 
 bool sendCoreHeartbeat() {
     std::wstring wideUrl(g_coreApiUrl.begin(), g_coreApiUrl.end());
@@ -168,9 +174,12 @@ bool sendCoreHeartbeat() {
         L"Authorization: Bearer " + std::wstring(g_serviceToken.begin(), g_serviceToken.end()) +
         L"\r\nContent-Type: application/json\r\nAccept: application/json\r\n";
 
-    const std::string body =
-        "{\"game\":\"atlas\",\"serverVersion\":\"" + jsonEscape(g_serverBuild) +
-        "\",\"adapterVersion\":\"" + jsonEscape(kAdapterVersion) + "\",\"online\":true}";
+    const std::string body = chaotic::atlas::makeHeartbeatPayload(
+        g_serverBuild,
+        kAdapterVersion,
+        g_serverReady.load(std::memory_order_relaxed),
+        g_playerCount.load(std::memory_order_relaxed)
+    );
 
     WinHttpHandle session(WinHttpOpen(L"ChaoticGamingAtlasAdapter/0.2.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
@@ -240,14 +249,17 @@ bool sendCoreHeartbeat() {
 void heartbeatLoop() noexcept {
     while (!g_stop.load()) {
         try {
-            sendCoreHeartbeat();
+            if (g_heartbeatRequested.exchange(false, std::memory_order_acq_rel) ||
+                g_serverReady.load(std::memory_order_relaxed)) {
+                sendCoreHeartbeat();
+            }
         } catch (...) {
             logMessage("[Chaotic Gaming Core] Unexpected heartbeat error; will retry.\n");
         }
 
         std::unique_lock<std::mutex> lock(g_waitMutex);
         g_waitCondition.wait_for(lock, std::chrono::seconds(g_intervalSeconds),
-            [] { return g_stop.load(); });
+            [] { return g_stop.load() || g_heartbeatRequested.load(); });
     }
 }
 
@@ -285,6 +297,8 @@ void startHeartbeat() {
         }
     }
 
+    ArkApi::GetCommands().AddOnTimerCallback(FString(kServerStateCallbackId), &refreshServerState);
+    g_serverStateCallbackRegistered = true;
     g_stop.store(false);
     g_heartbeatThread = std::thread(heartbeatLoop);
 }
@@ -302,6 +316,16 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
 
 CG_EXPORT void CG_CALL Plugin_Unload() noexcept {
     std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
+    if (g_serverStateCallbackRegistered) {
+        try {
+            ArkApi::GetCommands().RemoveOnTimerCallback(FString(kServerStateCallbackId));
+        } catch (...) {
+            logMessage("[Chaotic Gaming Core] Could not remove the ATLAS state timer callback cleanly.\n");
+        }
+        g_serverStateCallbackRegistered = false;
+    }
+    g_serverReady.store(false, std::memory_order_relaxed);
+    g_playerCount.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(g_waitMutex);
         g_stop.store(true);
