@@ -2,7 +2,7 @@
 
 ## Source and licensing boundary
 
-The plugin catalogue contains eight Kals archives. The inspected ZIPs contain compiled DLLs (and for CrossChat, a separate EXE), configuration files and limited documentation. No editable source or source license was present in those archives. Do not run, redistribute, decompile, or copy the compiled binaries. Use the configuration/documentation only to understand observable feature requirements, and implement original CMG code against the pinned ATLAS SDK.
+The plugin catalogue contains eight Kals archives. The inspected ZIPs contain compiled DLLs (and for CrossChat, a separate EXE), configuration files and limited documentation. No editable source or source license was present in those archives. For this CMG rebuild, the research scope is archive metadata, configuration and documentation only; we are not executing, decompiling, redistributing or reusing the compiled binaries. This is a project-scope decision, not a legal conclusion about reverse engineering. Any future binary analysis or redistribution requires a separate rights/legal review. Implement original CMG code against the pinned ATLAS SDK.
 
 ## Feature inventory and destination
 
@@ -117,4 +117,5 @@ Improve:
 - No raw Unreal object pointer may be retained across callbacks; use validated weak/identity handles and game-thread revalidation.
 - Network/database work stays off game-critical threads; all Unreal operations return to the game thread.
 - Every privileged action is typed, allowlisted, permission-checked, rate-limited and audited.
+- Reward workers must persist and enforce game-side grant deduplication with the stable `idempotencyKey` returned by Core (or the immutable reward ID) across retries and restarts. Core's current acknowledgement checks service principal and lease expiry but has no per-claim attempt token/fencing generation; do not assume a stale acknowledgement will always be rejected. Add a lease-generation token to Core before relying on attempt fencing.
 - Test disconnects, server restart, duplicate requests, stale identities, cross-grid transfer and rollback before enabling a feature.
