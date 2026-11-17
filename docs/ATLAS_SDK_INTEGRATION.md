@@ -10,6 +10,11 @@
 
 CMake fetches this exact commit and checks that both the public Atlas header and import library exist. Do not replace the commit with a moving branch or use one of the incomplete scaffold archives as a substitute.
 
+## Google Drive archive note
+
+The Drive file named `AtlasApi_1.71.zip` was inspected on 2026-11-17. It contains `version.dll`, `version.pdb`, `msdia140.dll` and `config.json`, but does **not** contain the public headers or `out_lib/AtlasApi.lib` described by the Drive blueprint. The pinned GitHub commit above was separately verified to contain `version/Core/Public/API/Atlas/Atlas.h`, `out_lib/AtlasApi.lib` and `LICENSE.TXT`. Use the pinned GitHub source dependency; do not treat the Drive ZIP as a complete SDK.
+
+
 ## Link check
 
 `plugins/ChaoticGamingCore/src/atlas_sdk_link_check.cpp` includes
