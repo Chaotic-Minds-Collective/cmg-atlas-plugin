@@ -61,7 +61,7 @@ Preserve:
 Improve:
 - Revalidate destination, structure ownership, safe-zone restrictions, combat state, passenger consent and cross-grid availability at commit time.
 - Use a durable teleport state machine so disconnects or server restarts cannot duplicate or strand entities.
-- Apply server-side cooldowns and Core wallet debit only when the teleport is accepted.
+- Define `accepted` as a durable Core teleport record created after all eligibility checks and before the countdown begins. Debit with a stable teleport idempotency key at that transition; if damage, timeout, disconnect or another failure cancels the teleport before confirmed arrival, issue exactly one compensating refund with its own stable idempotency key. Arrival is the terminal state that keeps the debit.
 
 ### 5. Kals Reusables → CMG Player / Equipment
 
