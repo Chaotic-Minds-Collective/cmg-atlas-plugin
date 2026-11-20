@@ -105,11 +105,11 @@ export function createCoreEventOutboxConsumer(options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl must be a function");
 
-  const limit = options.limit ?? 25;
+  const limit = options.limit ?? 1;
   const leaseSeconds = options.leaseSeconds ?? 120;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const eventTypes = options.eventTypes;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new TypeError("limit must be an integer between 1 and 100");
+  if (limit !== 1) throw new TypeError("limit must be 1 until the host can renew every outstanding event lease concurrently");
   if (!Number.isInteger(leaseSeconds) || leaseSeconds < 15 || leaseSeconds > 300) throw new TypeError("leaseSeconds must be an integer between 15 and 300");
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 60_000) throw new TypeError("requestTimeoutMs must be an integer between 1 and 60000");
   if (eventTypes !== undefined && (!Array.isArray(eventTypes) || eventTypes.length < 1 || eventTypes.length > 50 || eventTypes.some((type) => typeof type !== "string" || type.trim() === "" || type.length > 128) || new Set(eventTypes).size !== eventTypes.length)) {
@@ -181,6 +181,9 @@ export function createCoreEventOutboxConsumer(options = {}) {
       const { status, result } = await request("/claim", claimBody);
       if (status !== 200 || !Array.isArray(result?.data)) {
         throw new CoreEventOutboxError("Core returned an invalid outbox claim response", { status });
+      }
+      if (result.data.length > 1) {
+        throw new CoreEventOutboxError("Core returned more than one event for a single-event claim");
       }
 
       const summary = { claimed: result.data.length, delivered: 0, failed: 0, acknowledgementErrors: [] };

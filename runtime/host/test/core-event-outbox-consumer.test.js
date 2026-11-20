@@ -52,6 +52,7 @@ test("requires valid host configuration and a handler", () => {
   assert.throws(() => makeConsumer({ serverId: "bad" }), /serverId/);
   assert.throws(() => makeConsumer({ processEvent: null }), /processEvent/);
   assert.throws(() => makeConsumer({ limit: 0 }), /limit/);
+  assert.throws(() => makeConsumer({ limit: 2 }), /limit must be 1/);
   assert.throws(() => makeConsumer({ leaseSeconds: 10 }), /leaseSeconds/);
   assert.throws(() => makeConsumer({ eventTypes: [] }), /eventTypes/);
 });
@@ -75,25 +76,21 @@ test("claims scoped events and acknowledges with the outbox UUID and lease token
   assert.equal(handled[0].payload.eventId, "external-event-42");
   assert.equal(handled[0].payload.eventType, "tribe.member.joined");
   assert.equal(calls[0].url, `https://core.example.test/api/v1/integrations/servers/${serverId}/events/claim`);
-  assert.deepEqual(calls[0].body, { limit: 25, leaseSeconds: 120, eventTypes: ["tribe.member.joined"] });
+  assert.deepEqual(calls[0].body, { limit: 1, leaseSeconds: 120, eventTypes: ["tribe.member.joined"] });
   assert.equal(calls[0].headers.authorization, `Bearer ${credential}`);
   assert.equal(calls[1].url, `https://core.example.test/api/v1/integrations/servers/${serverId}/events/${outboxId}/ack`);
   assert.deepEqual(calls[1].body, { leaseToken, outcome: "delivered" });
 });
 
-test("processes claimed events sequentially", async () => {
+test("rejects multi-event responses before invoking any handler", async () => {
+  let handled = 0;
   const secondId = "66666666-6666-4666-8666-666666666666";
-  const order = [];
   const consumer = makeConsumer({
-    processEvent: async (event) => { order.push(`start:${event.id}`); await Promise.resolve(); order.push(`end:${event.id}`); },
-    fetchImpl: async (url, options) => {
-      if (String(url).endsWith("/claim")) return response(200, { data: [makeRow(), makeRow({ id: secondId })] });
-      return response(202, { data: { accepted: true, duplicate: false, eventId: options.body ? JSON.parse(options.body).leaseToken === leaseToken ? (String(url).includes(outboxId) ? outboxId : secondId) : null : null } });
-    }
+    processEvent: async () => { handled += 1; },
+    fetchImpl: async () => response(200, { data: [makeRow(), makeRow({ id: secondId })] })
   });
-  const result = await consumer.pollOnce();
-  assert.equal(result.delivered, 2);
-  assert.deepEqual(order, [`start:${outboxId}`, `end:${outboxId}`, `start:${secondId}`, `end:${secondId}`]);
+  await assert.rejects(consumer.pollOnce(), /more than one event for a single-event claim/);
+  assert.equal(handled, 0);
 });
 
 test("records handler failure through Core's retryable failed acknowledgement", async () => {
