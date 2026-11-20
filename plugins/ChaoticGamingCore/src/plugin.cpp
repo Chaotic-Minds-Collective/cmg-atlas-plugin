@@ -4,8 +4,10 @@
 #include <ICommands.h>
 #include <IHooks.h>
 #include <Atlas/AtlasApiUtils.h>
+#include <json.hpp>
 #include "chaotic/atlas/heartbeat_payload.hpp"
 #include "chaotic/atlas/event_payload.hpp"
+#include "chaotic/atlas/reward_delivery.hpp"
 #include <atomic>
 #include <cctype>
 #include <cwctype>
@@ -13,6 +15,11 @@
 #include <condition_variable>
 #include <deque>
 #include <cstdio>
+#include <fstream>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <unordered_map>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -32,6 +39,29 @@
 #define CG_STRINGIFY_DETAIL(value) #value
 #define CG_STRINGIFY(value) CG_STRINGIFY_DETAIL(value)
 
+// The pinned Atlas header set forward-declares FCustomItemData but its ARK
+// Inventory.h also redefines Atlas inventory types. Keep this exact shared
+// POD layout local instead of including the conflicting ARK header.
+struct FCustomItemByteArray {
+    TArray<unsigned char, FDefaultAllocator> Bytes;
+};
+struct FCustomItemByteArrays {
+    TArray<FCustomItemByteArray, FDefaultAllocator> ByteArrays;
+};
+struct FCustomItemDoubles {
+    TArray<double, FDefaultAllocator> Doubles;
+};
+struct FCustomItemData {
+    FName CustomDataName;
+    TArray<FString, FDefaultAllocator> CustomDataStrings;
+    TArray<float, FDefaultAllocator> CustomDataFloats;
+    TArray<UObject*, FDefaultAllocator> CustomDataObjects;
+    TArray<UClass*, FDefaultAllocator> CustomDataClasses;
+    TArray<FName, FDefaultAllocator> CustomDataNames;
+    FCustomItemByteArrays CustomDataBytes;
+    FCustomItemDoubles CustomDataDoubles;
+};
+
 namespace {
 struct PendingEvent {
     unsigned long long generation{};
@@ -39,6 +69,40 @@ struct PendingEvent {
     std::string eventType;
     std::string occurredAt;
     std::string payloadJson;
+};
+
+struct PendingReward {
+    std::string id;
+    std::string leaseToken;
+    std::string idempotencyKey;
+    std::string targetExternalId;
+    std::string itemKey;
+    int quantity{};
+};
+
+enum class RewardWorkStatus { delivered, failed, manual_review, lease_lost };
+
+struct RewardWorkResult {
+    RewardWorkStatus status{RewardWorkStatus::failed};
+    std::string error;
+    nlohmann::json receipt{nlohmann::json::object()};
+};
+
+struct RewardWorkItem {
+    PendingReward reward;
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool done{false};
+    bool leaseLost{false};
+    RewardWorkResult result;
+};
+
+struct RewardJournalEntry {
+    std::string rewardId;
+    std::string targetExternalId;
+    std::string itemKey;
+    int quantity{};
+    std::string state;
 };
 
 enum class EventPublishResult { Drained, RetryLater, HeartbeatDue };
@@ -81,6 +145,18 @@ std::atomic<bool> g_serverReady{false};
 std::atomic<bool> g_heartbeatRequested{true};
 std::atomic<unsigned int> g_playerCount{0};
 bool g_serverStateCallbackRegistered{false};
+
+constexpr char kRewardCallbackId[] = "ChaoticGamingCore.RewardDelivery";
+std::atomic<bool> g_rewardDeliveryConfigured{false};
+bool g_rewardCallbackRegistered{false};
+std::thread g_rewardThread;
+std::mutex g_rewardMutex;
+std::condition_variable g_rewardCondition;
+std::deque<std::shared_ptr<RewardWorkItem>> g_pendingRewards;
+std::mutex g_rewardJournalMutex;
+std::unordered_map<std::string, RewardJournalEntry> g_rewardJournal;
+std::unordered_map<std::string, std::string> g_rewardBlueprints;
+std::string g_rewardJournalPath;
 
 std::string readEnvironment(const char* name) {
     const DWORD required = GetEnvironmentVariableA(name, nullptr, 0);
@@ -278,7 +354,8 @@ void refreshServerState() noexcept {
     }
 }
 
-bool sendCorePost(const std::wstring& requestPath, const std::string& body, const char* operation) {
+bool sendCorePost(const std::wstring& requestPath, const std::string& body, const char* operation,
+    std::string* responseBody = nullptr) {
     std::wstring wideUrl(g_coreApiUrl.begin(), g_coreApiUrl.end());
     URL_COMPONENTS parts{};
     parts.dwStructSize = sizeof(parts);
@@ -368,10 +445,451 @@ bool sendCorePost(const std::wstring& requestPath, const std::string& body, cons
         return false;
     }
 
+    if (responseBody) {
+        responseBody->clear();
+        constexpr std::size_t kMaximumResponseBytes = 1024 * 1024;
+        for (;;) {
+            DWORD available = 0;
+            if (!WinHttpQueryDataAvailable(request.value, &available)) {
+                logMessage("[Chaotic Gaming Core] Could not read the Core response body.\n");
+                return false;
+            }
+            if (available == 0) break;
+            if (responseBody->size() + available > kMaximumResponseBytes) {
+                logMessage("[Chaotic Gaming Core] Core response exceeded the one-megabyte safety limit.\n");
+                return false;
+            }
+            std::vector<char> buffer(available);
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(request.value, buffer.data(), available, &bytesRead)) {
+                logMessage("[Chaotic Gaming Core] Core response body read failed.\n");
+                return false;
+            }
+            if (bytesRead == 0) break;
+            responseBody->append(buffer.data(), bytesRead);
+        }
+    }
+
     char message[128]{};
     std::snprintf(message, sizeof(message), "[Chaotic Gaming Core] %s accepted.\n", operation);
     logMessage(message);
     return true;
+}
+
+
+bool isSafeRewardItemKey(const std::string& value) noexcept {
+    if (value.empty() || value.size() > 64) return false;
+    for (const unsigned char ch : value) {
+        if (!std::isalnum(ch) && ch != '-' && ch != '_' && ch != '.') return false;
+    }
+    return true;
+}
+
+bool isSafeBlueprintPath(const std::string& value) noexcept {
+    if (value.size() < 20 || value.size() > 512 ||
+        value.rfind("Blueprint'", 0) != 0 || value.back() != '\'') return false;
+    if (value.find("/Game/") == std::string::npos || value.find("..") != std::string::npos) return false;
+    for (const unsigned char ch : value) {
+        if (ch < 0x20 || ch == 0x7f) return false;
+    }
+    return true;
+}
+
+bool loadRewardJournal() {
+    std::ifstream input(g_rewardJournalPath, std::ios::in | std::ios::binary);
+    if (!input.is_open()) {
+        HANDLE file = CreateFileA(g_rewardJournalPath.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        CloseHandle(file);
+        return true;
+    }
+
+    std::unordered_map<std::string, RewardJournalEntry> loaded;
+    std::string line;
+    try {
+        while (std::getline(input, line)) {
+            if (line.empty()) continue;
+            const auto record = nlohmann::json::parse(line);
+            const std::string key = record.value("idempotencyKey", std::string{});
+            RewardJournalEntry entry{
+                record.value("rewardId", std::string{}),
+                record.value("targetExternalId", std::string{}),
+                record.value("itemKey", std::string{}),
+                record.value("quantity", 0),
+                record.value("state", std::string{})
+            };
+            if (!chaotic::atlas::isRewardKey(key) || !isUuid(entry.rewardId) ||
+                !chaotic::atlas::isSteamId(entry.targetExternalId) ||
+                !isSafeRewardItemKey(entry.itemKey) || entry.quantity < 1 || entry.quantity > 100 ||
+                (entry.state != "granting" && entry.state != "granted" &&
+                 entry.state != "failed" && entry.state != "manual_review")) {
+                return false;
+            }
+            loaded[key] = std::move(entry);
+        }
+    } catch (...) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_rewardJournalMutex);
+    g_rewardJournal = std::move(loaded);
+    return true;
+}
+
+bool appendRewardJournal(const PendingReward& reward, const char* state) {
+    nlohmann::json record{
+        {"rewardId", reward.id},
+        {"idempotencyKey", reward.idempotencyKey},
+        {"targetExternalId", reward.targetExternalId},
+        {"itemKey", reward.itemKey},
+        {"quantity", reward.quantity},
+        {"state", state}
+    };
+    const std::string line = record.dump() + "\n";
+    HANDLE file = CreateFileA(g_rewardJournalPath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const BOOL writeOk = WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    const BOOL flushOk = writeOk && written == line.size() && FlushFileBuffers(file);
+    CloseHandle(file);
+    if (!flushOk) return false;
+
+    std::lock_guard<std::mutex> lock(g_rewardJournalMutex);
+    g_rewardJournal[reward.idempotencyKey] = RewardJournalEntry{
+        reward.id, reward.targetExternalId, reward.itemKey, reward.quantity, state
+    };
+    return true;
+}
+
+std::optional<RewardJournalEntry> findRewardJournalEntry(const std::string& key) {
+    std::lock_guard<std::mutex> lock(g_rewardJournalMutex);
+    const auto found = g_rewardJournal.find(key);
+    if (found == g_rewardJournal.end()) return std::nullopt;
+    return found->second;
+}
+
+bool parsePendingReward(const nlohmann::json& row, PendingReward& reward) {
+    try {
+        if (!row.is_object() || row.value("game", std::string{}) != "atlas" ||
+            !row.contains("deliveryPayload") || !row["deliveryPayload"].is_object()) return false;
+        const auto& payload = row["deliveryPayload"];
+        reward.id = row.value("id", std::string{});
+        reward.leaseToken = row.value("leaseToken", std::string{});
+        reward.idempotencyKey = row.value("idempotencyKey", std::string{});
+        reward.targetExternalId = row.value("targetExternalId", std::string{});
+        reward.itemKey = payload.value("itemKey", std::string{});
+        reward.quantity = payload.value("quantity", 0);
+        return chaotic::atlas::isValidRewardDescriptor(
+            reward.id, reward.leaseToken, reward.idempotencyKey,
+            reward.targetExternalId, reward.itemKey, reward.quantity);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool acknowledgeReward(const PendingReward& reward, const char* outcome,
+    const std::string& error = {}, const nlohmann::json& receipt = nlohmann::json::object()) {
+    const std::wstring serverId(g_serverId.begin(), g_serverId.end());
+    const std::wstring rewardId(reward.id.begin(), reward.id.end());
+    const std::wstring requestPath = L"/integrations/servers/" + serverId +
+        L"/rewards/" + rewardId + L"/ack";
+    nlohmann::json body{
+        {"leaseToken", reward.leaseToken},
+        {"outcome", outcome}
+    };
+    if (!error.empty()) body["error"] = error;
+    if (receipt.is_object() && !receipt.empty()) body["response"] = receipt;
+    return sendCorePost(requestPath, body.dump(), "ATLAS reward acknowledgement");
+}
+
+bool renewRewardLease(const PendingReward& reward) {
+    const std::wstring serverId(g_serverId.begin(), g_serverId.end());
+    const std::wstring rewardId(reward.id.begin(), reward.id.end());
+    const std::wstring requestPath = L"/integrations/servers/" + serverId +
+        L"/rewards/" + rewardId + L"/renew";
+    const nlohmann::json body{
+        {"leaseToken", reward.leaseToken},
+        {"leaseSeconds", 120}
+    };
+    std::string response;
+    if (!sendCorePost(requestPath, body.dump(), "ATLAS reward lease renewal", &response)) return false;
+    try {
+        const auto parsed = nlohmann::json::parse(response);
+        return parsed.value("data", nlohmann::json::object()).value("renewed", false) &&
+            parsed["data"].value("rewardId", std::string{}) == reward.id;
+    } catch (...) {
+        return false;
+    }
+}
+
+RewardWorkResult grantRewardOnGameThread(const PendingReward& reward) noexcept {
+    try {
+        const auto blueprint = g_rewardBlueprints.find(reward.itemKey);
+        if (blueprint == g_rewardBlueprints.end()) {
+            return {RewardWorkStatus::failed, "Reward itemKey is not in the server-side blueprint allowlist.", {}};
+        }
+
+        const auto steamId = static_cast<uint64>(std::stoull(reward.targetExternalId));
+        AShooterPlayerController* player = ArkApi::GetApiUtils().FindPlayerFromSteamId(steamId);
+        if (!player) {
+            return {RewardWorkStatus::failed, "The reward recipient is not online on this server.", {}};
+        }
+
+        // The GiveItem wrapper is not declared by the pinned public headers. The uploaded
+        // build guide documents this native signature; runtime use remains disabled until
+        // an operator explicitly attests that it was verified on an isolated target server.
+        if (!GetAddress("AShooterPlayerController.GiveItem")) {
+            return {RewardWorkStatus::failed, "The pinned API does not expose AShooterPlayerController.GiveItem.", {}};
+        }
+
+        TArray<UPrimalItem*> grantedItems;
+        FString blueprintPath(blueprint->second.c_str());
+        int quantity = reward.quantity;
+        const bool granted = NativeCall<bool, TArray<UPrimalItem*>*, FString*, int, float, bool, bool, float>(
+            reinterpret_cast<void*>(player), "AShooterPlayerController.GiveItem",
+            &grantedItems, &blueprintPath, quantity, 1.0f, false, false, 0.0f);
+        if (!granted) {
+            return {RewardWorkStatus::manual_review, "The native GiveItem call did not confirm whether an inventory mutation occurred.", {}};
+        }
+        if (grantedItems.Num() == 0) {
+            return {RewardWorkStatus::manual_review, "The native grant returned success without item receipts.", {}};
+        }
+
+        int totalQuantity = 0;
+        nlohmann::json items = nlohmann::json::array();
+        const FName markerName("CMGRewardDelivery", static_cast<EFindName>(1));
+        for (UPrimalItem* item : grantedItems) {
+            if (!item) continue;
+            totalQuantity += item->GetItemQuantity();
+
+            FCustomItemData marker{};
+            marker.CustomDataName = markerName;
+            marker.CustomDataStrings.Add(FString(reward.idempotencyKey.c_str()));
+            item->SetCustomItemData(&marker);
+
+            FCustomItemData verified{};
+            if (!item->GetCustomItemData(markerName, &verified)) {
+                return {RewardWorkStatus::manual_review, "The item was granted but its idempotency marker could not be verified.", {}};
+            }
+            bool markerFound = false;
+            for (const FString& value : verified.CustomDataStrings) {
+                if (toUtf8(value) == reward.idempotencyKey) markerFound = true;
+            }
+            if (!markerFound) {
+                return {RewardWorkStatus::manual_review, "The item was granted but its idempotency marker did not persist.", {}};
+            }
+
+            const FItemNetID itemId = item->ItemIDField();
+            items.push_back({
+                {"itemId1", itemId.ItemID1},
+                {"itemId2", itemId.ItemID2},
+                {"quantity", item->GetItemQuantity()}
+            });
+        }
+
+        if (totalQuantity < reward.quantity) {
+            return {RewardWorkStatus::manual_review, "The native grant returned fewer items than requested.", {}};
+        }
+        return {RewardWorkStatus::delivered, {}, {
+            {"idempotencyKey", reward.idempotencyKey},
+            {"items", std::move(items)}
+        }};
+    } catch (...) {
+        return {RewardWorkStatus::manual_review, "The native item grant raised an exception; verify the player's inventory before retrying.", {}};
+    }
+}
+
+void processRewardQueue() noexcept {
+    try {
+        std::shared_ptr<RewardWorkItem> work;
+        {
+            std::lock_guard<std::mutex> lock(g_rewardMutex);
+            if (g_pendingRewards.empty()) return;
+            work = g_pendingRewards.front();
+            g_pendingRewards.pop_front();
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(work->mutex);
+            if (work->leaseLost || g_stop.load(std::memory_order_acquire)) {
+                work->leaseLost = true;
+                work->done = true;
+                work->result.status = RewardWorkStatus::lease_lost;
+                work->condition.notify_all();
+                return;
+            }
+        }
+
+        RewardWorkResult result = grantRewardOnGameThread(work->reward);
+        {
+            std::lock_guard<std::mutex> lock(work->mutex);
+            if (!work->leaseLost) {
+                work->result = std::move(result);
+                work->done = true;
+            }
+        }
+        work->condition.notify_all();
+    } catch (...) {
+        logMessage("[Chaotic Gaming Core] Unexpected game-thread reward dispatch error.\n");
+    }
+}
+
+void completeRewardWork(const std::shared_ptr<RewardWorkItem>& work) {
+    const auto& reward = work->reward;
+    switch (work->result.status) {
+    case RewardWorkStatus::delivered:
+        if (!appendRewardJournal(reward, "granted")) {
+            appendRewardJournal(reward, "manual_review");
+            acknowledgeReward(reward, "manual_review", "MANUAL_REVIEW_REQUIRED: the game grant succeeded but its durable journal receipt could not be saved.", work->result.receipt);
+            return;
+        }
+        acknowledgeReward(reward, "delivered", {}, work->result.receipt);
+        return;
+    case RewardWorkStatus::failed:
+        if (!appendRewardJournal(reward, "failed")) {
+            appendRewardJournal(reward, "manual_review");
+            acknowledgeReward(reward, "manual_review", "MANUAL_REVIEW_REQUIRED: the failure state could not be durably recorded.");
+            return;
+        }
+        acknowledgeReward(reward, "failed", work->result.error);
+        return;
+    case RewardWorkStatus::manual_review:
+        appendRewardJournal(reward, "manual_review");
+        acknowledgeReward(reward, "manual_review", "MANUAL_REVIEW_REQUIRED: " + work->result.error, work->result.receipt);
+        return;
+    case RewardWorkStatus::lease_lost:
+        return;
+    }
+}
+
+void rewardWorkerLoop() noexcept {
+    while (!g_stop.load(std::memory_order_acquire)) {
+        try {
+            const std::wstring serverId(g_serverId.begin(), g_serverId.end());
+            const std::wstring requestPath = L"/integrations/servers/" + serverId + L"/rewards/claim";
+            const nlohmann::json claimBody{{"limit", 1}, {"leaseSeconds", 120}};
+            std::string response;
+            if (sendCorePost(requestPath, claimBody.dump(), "ATLAS reward claim", &response)) {
+                const auto parsed = nlohmann::json::parse(response);
+                const auto rows = parsed.value("data", nlohmann::json::array());
+                if (rows.is_array()) {
+                    for (const auto& row : rows) {
+                        PendingReward reward;
+                        if (!parsePendingReward(row, reward)) {
+                            if (row.is_object()) {
+                                reward.id = row.value("id", std::string{});
+                                reward.leaseToken = row.value("leaseToken", std::string{});
+                                if (isUuid(reward.id) && isUuid(reward.leaseToken)) {
+                                    acknowledgeReward(reward, "failed", "Core returned a malformed or unsupported ATLAS reward payload; no game grant was attempted.");
+                                }
+                            }
+                            continue;
+                        }
+
+                        const auto previous = findRewardJournalEntry(reward.idempotencyKey);
+                        if (previous) {
+                            const bool sameGrant = previous->rewardId == reward.id &&
+                                previous->targetExternalId == reward.targetExternalId &&
+                                previous->itemKey == reward.itemKey &&
+                                previous->quantity == reward.quantity;
+                            if (!sameGrant || previous->state == "granting" || previous->state == "manual_review") {
+                                acknowledgeReward(reward, "manual_review", "MANUAL_REVIEW_REQUIRED: a previous attempt has an uncertain or conflicting journal state.");
+                                continue;
+                            }
+                            if (previous->state == "granted") {
+                                acknowledgeReward(reward, "delivered", {}, {
+                                    {"idempotencyKey", reward.idempotencyKey},
+                                    {"duplicate", true},
+                                    {"journalState", "granted"}
+                                });
+                                continue;
+                            }
+                        }
+
+                        if (!appendRewardJournal(reward, "granting")) {
+                            acknowledgeReward(reward, "failed", "The durable reward journal could not be written; no game grant was attempted.");
+                            continue;
+                        }
+
+                        auto work = std::make_shared<RewardWorkItem>();
+                        work->reward = reward;
+                        {
+                            std::lock_guard<std::mutex> lock(g_rewardMutex);
+                            g_pendingRewards.push_back(work);
+                        }
+                        g_rewardCondition.notify_all();
+
+                        std::unique_lock<std::mutex> lock(work->mutex);
+                        const auto deliveryDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+                        auto nextRenewal = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+                        while (!work->done && !g_stop.load(std::memory_order_acquire)) {
+                            work->condition.wait_for(lock, std::chrono::seconds(1));
+                            if (g_stop.load(std::memory_order_acquire) || work->done) continue;
+                            if (std::chrono::steady_clock::now() >= deliveryDeadline) {
+                                work->leaseLost = true;
+                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\\n");
+                                break;
+                            }
+                            if (std::chrono::steady_clock::now() >= nextRenewal) {
+                                lock.unlock();
+                                const bool renewed = renewRewardLease(reward);
+                                lock.lock();
+                                if (!renewed) {
+                                    work->leaseLost = true;
+                                    break;
+                                }
+                                nextRenewal = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+                            }
+                        }
+                        const bool canAcknowledge = work->done && !work->leaseLost &&
+                            !g_stop.load(std::memory_order_acquire);
+                        lock.unlock();
+                        if (canAcknowledge) completeRewardWork(work);
+                    }
+                }
+            }
+        } catch (...) {
+            logMessage("[Chaotic Gaming Core] Reward worker encountered an error; it will retry.\n");
+        }
+
+        std::unique_lock<std::mutex> lock(g_rewardMutex);
+        g_rewardCondition.wait_for(lock, std::chrono::seconds(5),
+            [] { return g_stop.load(std::memory_order_acquire); });
+    }
+}
+
+bool configureRewardDelivery() {
+    const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
+    const std::string runtimeApiVersion = readEnvironment("ATLAS_SERVER_API_VERSION");
+    if (readEnvironment("CHAOTIC_ATLAS_ENABLE_REWARD_DELIVERY") != "1" ||
+        readEnvironment("CHAOTIC_ATLAS_GIVE_ITEM_ABI_VERIFIED") != "1" ||
+        serverBuild.empty() || runtimeApiVersion != kCandidateApiVersion ||
+        readEnvironment("CHAOTIC_ATLAS_REWARD_VERIFIED_SERVER_BUILD") != serverBuild ||
+        readEnvironment("CHAOTIC_ATLAS_REWARD_VERIFIED_API_VERSION") != runtimeApiVersion) return false;
+
+    g_rewardJournalPath = readEnvironment("CHAOTIC_ATLAS_REWARD_JOURNAL_PATH");
+    const std::string mapJson = readEnvironment("CHAOTIC_ATLAS_REWARD_ITEM_MAP_JSON");
+    if (g_rewardJournalPath.empty() || !std::filesystem::path(g_rewardJournalPath).is_absolute() || mapJson.empty()) return false;
+
+    try {
+        const auto parsed = nlohmann::json::parse(mapJson);
+        if (!parsed.is_object() || parsed.empty()) return false;
+        std::unordered_map<std::string, std::string> blueprints;
+        for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+            if (!isSafeRewardItemKey(it.key()) || !it.value().is_string()) return false;
+            const std::string path = it.value().get<std::string>();
+            if (!isSafeBlueprintPath(path)) return false;
+            blueprints.emplace(it.key(), path);
+        }
+        if (!GetAddress("AShooterPlayerController.GiveItem")) return false;
+        g_rewardBlueprints = std::move(blueprints);
+        if (!loadRewardJournal()) return false;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool sendCoreHeartbeat() {
@@ -573,6 +1091,16 @@ void startHeartbeat() {
     g_stop.store(false);
     g_heartbeatThread = std::thread(heartbeatLoop);
     g_eventPublishingConfigured.store(!g_hooksPinnedPassthrough && isUuid(g_clusterId) && isGridId(g_gridId) && readEnvironment("CHAOTIC_ATLAS_ENABLE_PLAYER_EVENTS") == "1", std::memory_order_release);
+
+    g_rewardDeliveryConfigured.store(configureRewardDelivery(), std::memory_order_release);
+    if (g_rewardDeliveryConfigured.load(std::memory_order_acquire)) {
+        ArkApi::GetCommands().AddOnTimerCallback(FString(kRewardCallbackId), &processRewardQueue);
+        g_rewardCallbackRegistered = true;
+        g_rewardThread = std::thread(rewardWorkerLoop);
+        logMessage("[Chaotic Gaming Core] Native reward delivery worker started with explicit ABI attestation, item allowlist, and durable journal.\n");
+    } else {
+        logMessage("[Chaotic Gaming Core] Native reward delivery remains disabled; explicit ABI attestation, item allowlist, and journal path are required.\n");
+    }
 }
 } // namespace
 
@@ -590,6 +1118,23 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
 CG_EXPORT void CG_CALL Plugin_Unload() noexcept {
     std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
     disablePlayerEventPublishing();
+    g_serverReady.store(false, std::memory_order_relaxed);
+    g_playerCount.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(g_waitMutex);
+        g_stop.store(true);
+    }
+    g_waitCondition.notify_all();
+    g_rewardCondition.notify_all();
+    if (g_rewardThread.joinable()) g_rewardThread.join();
+    if (g_rewardCallbackRegistered) {
+        try {
+            ArkApi::GetCommands().RemoveOnTimerCallback(FString(kRewardCallbackId));
+        } catch (...) {
+            logMessage("[Chaotic Gaming Core] Could not remove the reward timer callback cleanly.\n");
+        }
+        g_rewardCallbackRegistered = false;
+    }
     if (g_serverStateCallbackRegistered) {
         try {
             ArkApi::GetCommands().RemoveOnTimerCallback(FString(kServerStateCallbackId));
@@ -598,14 +1143,8 @@ CG_EXPORT void CG_CALL Plugin_Unload() noexcept {
         }
         g_serverStateCallbackRegistered = false;
     }
-    g_serverReady.store(false, std::memory_order_relaxed);
-    g_playerCount.store(0, std::memory_order_relaxed);
-    {
-        std::lock_guard<std::mutex> lock(g_waitMutex);
-        g_stop.store(true);
-    }
-    g_waitCondition.notify_all();
     if (g_heartbeatThread.joinable()) g_heartbeatThread.join();
+    g_rewardDeliveryConfigured.store(false, std::memory_order_release);
     logLifecycle("Plugin_Unload");
 }
 
