@@ -17,6 +17,7 @@
 #include <deque>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -626,8 +627,8 @@ RewardWorkResult grantRewardOnGameThread(const PendingReward& reward) noexcept {
         const bool granted = NativeCall<bool, TArray<UPrimalItem*>*, FString*, int, float, bool, bool, float>(
             reinterpret_cast<void*>(player), "AShooterPlayerController.GiveItem",
             &grantedItems, &blueprintPath, reward.quantity, 1.0f, false, false, 0.0f);
-        if (!granted && grantedItems.Num() == 0) {
-            return {RewardWorkStatus::failed, "The ATLAS server rejected the item grant.", {}};
+        if (!granted) {
+            return {RewardWorkStatus::manual_review, "The native GiveItem call did not confirm whether an inventory mutation occurred.", {}};
         }
         if (grantedItems.Num() == 0) {
             return {RewardWorkStatus::manual_review, "The native grant returned success without item receipts.", {}};
@@ -753,7 +754,16 @@ void rewardWorkerLoop() noexcept {
                 if (rows.is_array()) {
                     for (const auto& row : rows) {
                         PendingReward reward;
-                        if (!parsePendingReward(row, reward)) continue;
+                        if (!parsePendingReward(row, reward)) {
+                            if (row.is_object()) {
+                                reward.id = row.value("id", std::string{});
+                                reward.leaseToken = row.value("leaseToken", std::string{});
+                                if (isUuid(reward.id) && isUuid(reward.leaseToken)) {
+                                    acknowledgeReward(reward, "failed", "Core returned a malformed or unsupported ATLAS reward payload; no game grant was attempted.");
+                                }
+                            }
+                            continue;
+                        }
 
                         const auto previous = findRewardJournalEntry(reward.idempotencyKey);
                         if (previous) {
@@ -825,7 +835,7 @@ bool configureRewardDelivery() {
 
     g_rewardJournalPath = readEnvironment("CHAOTIC_ATLAS_REWARD_JOURNAL_PATH");
     const std::string mapJson = readEnvironment("CHAOTIC_ATLAS_REWARD_ITEM_MAP_JSON");
-    if (g_rewardJournalPath.empty() || mapJson.empty()) return false;
+    if (g_rewardJournalPath.empty() || !std::filesystem::path(g_rewardJournalPath).is_absolute() || mapJson.empty()) return false;
 
     try {
         const auto parsed = nlohmann::json::parse(mapJson);
