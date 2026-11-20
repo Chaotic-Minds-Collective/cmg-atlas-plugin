@@ -45,3 +45,17 @@ The mock stream is test-only. It does not connect to a game server, issue RCON c
 - Privileged actions fail closed when authorization cannot be verified.
 - Network failures must not crash or block game-critical threads.
 - Do not test on a live production server.
+
+
+## Core-backed native reward delivery
+
+The adapter contains a disabled-by-default Core reward worker. It polls the server-scoped Core reward queue on a background thread, renews active leases, and dispatches any game-side action through the ATLAS timer callback on the game thread. A durable append-only journal prevents automatic re-grants after an ambiguous worker restart; uncertain cases are parked in Core's `manual_review` state for audited administrator reconciliation.
+
+The worker requires all of the following environment variables and will not claim rewards unless every gate is satisfied:
+
+- `CHAOTIC_ATLAS_ENABLE_REWARD_DELIVERY=1`
+- `CHAOTIC_ATLAS_GIVE_ITEM_ABI_VERIFIED=1` — explicit operator attestation after validating the native `AShooterPlayerController.GiveItem` signature against the exact isolated server build. This method is described in the uploaded build guide but is not declared in the pinned public API headers.
+- `CHAOTIC_ATLAS_REWARD_ITEM_MAP_JSON` — server-owned JSON object mapping safe item keys to exact, reviewed Blueprint paths.
+- `CHAOTIC_ATLAS_REWARD_JOURNAL_PATH` — writable durable journal path on the same server host.
+
+Do not set these variables on production until the native method ABI, item metadata persistence, player disconnect behavior, worker restart behavior, and acknowledgement-loss scenarios have passed on an isolated test server. The C++ build alone does not establish live ATLAS compatibility.
