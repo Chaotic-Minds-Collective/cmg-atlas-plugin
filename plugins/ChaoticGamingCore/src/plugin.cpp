@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <cstdlib>
 #include <mutex>
@@ -495,7 +496,7 @@ bool loadRewardJournal() {
                 record.value("quantity", 0),
                 record.value("state", "")
             };
-            if (key.size() < 8 || !isUuid(entry.rewardId) ||
+            if (!chaotic::atlas::isRewardKey(key) || !isUuid(entry.rewardId) ||
                 !chaotic::atlas::isSteamId(entry.targetExternalId) ||
                 !isSafeRewardItemKey(entry.itemKey) || entry.quantity < 1 || entry.quantity > 100 ||
                 (entry.state != "granting" && entry.state != "granted" &&
