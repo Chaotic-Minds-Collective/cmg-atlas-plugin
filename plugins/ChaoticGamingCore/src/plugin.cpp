@@ -4,7 +4,6 @@
 #include <ICommands.h>
 #include <IHooks.h>
 #include <Atlas/AtlasApiUtils.h>
-#include <API/ARK/Inventory.h>
 #include <json.hpp>
 #include "chaotic/atlas/heartbeat_payload.hpp"
 #include "chaotic/atlas/event_payload.hpp"
@@ -39,6 +38,29 @@
 #endif
 #define CG_STRINGIFY_DETAIL(value) #value
 #define CG_STRINGIFY(value) CG_STRINGIFY_DETAIL(value)
+
+// The pinned Atlas header set forward-declares FCustomItemData but its ARK
+// Inventory.h also redefines Atlas inventory types. Keep this exact shared
+// POD layout local instead of including the conflicting ARK header.
+struct FCustomItemByteArray {
+    TArray<unsigned char, FDefaultAllocator> Bytes;
+};
+struct FCustomItemByteArrays {
+    TArray<FCustomItemByteArray, FDefaultAllocator> ByteArrays;
+};
+struct FCustomItemDoubles {
+    TArray<double, FDefaultAllocator> Doubles;
+};
+struct FCustomItemData {
+    FName CustomDataName;
+    TArray<FString, FDefaultAllocator> CustomDataStrings;
+    TArray<float, FDefaultAllocator> CustomDataFloats;
+    TArray<UObject*, FDefaultAllocator> CustomDataObjects;
+    TArray<UClass*, FDefaultAllocator> CustomDataClasses;
+    TArray<FName, FDefaultAllocator> CustomDataNames;
+    FCustomItemByteArrays CustomDataBytes;
+    FCustomItemDoubles CustomDataDoubles;
+};
 
 namespace {
 struct PendingEvent {
@@ -624,9 +646,10 @@ RewardWorkResult grantRewardOnGameThread(const PendingReward& reward) noexcept {
 
         TArray<UPrimalItem*> grantedItems;
         FString blueprintPath(blueprint->second.c_str());
+        int quantity = reward.quantity;
         const bool granted = NativeCall<bool, TArray<UPrimalItem*>*, FString*, int, float, bool, bool, float>(
             reinterpret_cast<void*>(player), "AShooterPlayerController.GiveItem",
-            &grantedItems, &blueprintPath, reward.quantity, 1.0f, false, false, 0.0f);
+            &grantedItems, &blueprintPath, quantity, 1.0f, false, false, 0.0f);
         if (!granted) {
             return {RewardWorkStatus::manual_review, "The native GiveItem call did not confirm whether an inventory mutation occurred.", {}};
         }
@@ -636,7 +659,7 @@ RewardWorkResult grantRewardOnGameThread(const PendingReward& reward) noexcept {
 
         int totalQuantity = 0;
         nlohmann::json items = nlohmann::json::array();
-        const FName markerName("CMGRewardDelivery", EFindName::FNAME_Add);
+        const FName markerName("CMGRewardDelivery", static_cast<EFindName>(1));
         for (UPrimalItem* item : grantedItems) {
             if (!item) continue;
             totalQuantity += item->GetItemQuantity();
