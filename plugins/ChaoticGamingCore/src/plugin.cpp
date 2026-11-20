@@ -822,9 +822,17 @@ void rewardWorkerLoop() noexcept {
                         g_rewardCondition.notify_all();
 
                         std::unique_lock<std::mutex> lock(work->mutex);
+                        const auto deliveryDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
                         auto nextRenewal = std::chrono::steady_clock::now() + std::chrono::seconds(45);
                         while (!work->done && !g_stop.load(std::memory_order_acquire)) {
-                            if (work->condition.wait_until(lock, nextRenewal) == std::cv_status::timeout) {
+                            work->condition.wait_for(lock, std::chrono::seconds(1));
+                            if (g_stop.load(std::memory_order_acquire) || work->done) continue;
+                            if (std::chrono::steady_clock::now() >= deliveryDeadline) {
+                                work->leaseLost = true;
+                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\\n");
+                                break;
+                            }
+                            if (std::chrono::steady_clock::now() >= nextRenewal) {
                                 lock.unlock();
                                 const bool renewed = renewRewardLease(reward);
                                 lock.lock();
