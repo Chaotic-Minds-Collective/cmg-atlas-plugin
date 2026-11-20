@@ -3,17 +3,16 @@
 ## Pinned dependency
 
 - Repository: https://github.com/Chaotic-Minds-Collective/cmg-atlas-api
-- Commit: `1bc2be00b5841069d816ff6c9d85486b13cfc252`
+- Commit: `a757d0c256e6d221742fb131d46d8049c12815a6`
 - Public include root: `version/Core/Public`
 - ATLAS import library: `out_lib/AtlasApi.lib`
 - License: MIT, from the API repository's `LICENSE.TXT`
 
-CMake fetches this exact commit and checks that both the public Atlas header and import library exist. Do not replace the commit with a moving branch or use one of the incomplete scaffold archives as a substitute.
+CMake fetches this exact commit and checks that both the public Atlas header and import library exist. This revision includes failure-safe MinHook registration/removal, validated plugin paths, dependency-first plugin loading, and the ATLAS weak-reference/player-cache and world-save compatibility fixes. The public header and import-library paths remain unchanged from the previous pinned revision. Do not replace the commit with a moving branch or use one of the incomplete scaffold archives as a substitute.
 
 ## Google Drive archive note
 
 The Drive file named `AtlasApi_1.71.zip` was inspected on 2026-11-17. It contains `version.dll`, `version.pdb`, `msdia140.dll` and `config.json`, but does **not** contain the public headers or `out_lib/AtlasApi.lib` described by the Drive blueprint. The pinned GitHub commit above was separately verified to contain `version/Core/Public/API/Atlas/Atlas.h`, `out_lib/AtlasApi.lib` and `LICENSE.TXT`. Use the pinned GitHub source dependency; do not treat the Drive ZIP as a complete SDK.
-
 
 ## Link check
 
