@@ -55,6 +55,8 @@ The worker requires all of the following environment variables and will not clai
 
 - `CHAOTIC_ATLAS_ENABLE_REWARD_DELIVERY=1`
 - `CHAOTIC_ATLAS_GIVE_ITEM_ABI_VERIFIED=1` — explicit operator attestation after validating the native `AShooterPlayerController.GiveItem` signature against the exact isolated server build. This method is described in the uploaded build guide but is not declared in the pinned public API headers.
+- `CHAOTIC_ATLAS_REWARD_VERIFIED_SERVER_BUILD` — must exactly match `ATLAS_SERVER_BUILD` observed at runtime.
+- `CHAOTIC_ATLAS_REWARD_VERIFIED_API_VERSION` — must exactly match `ATLAS_SERVER_API_VERSION` observed at runtime and the adapter's pinned API version.
 - `CHAOTIC_ATLAS_REWARD_ITEM_MAP_JSON` — server-owned JSON object mapping safe item keys to exact, reviewed Blueprint paths.
 - `CHAOTIC_ATLAS_REWARD_JOURNAL_PATH` — writable durable journal path on the same server host.
 

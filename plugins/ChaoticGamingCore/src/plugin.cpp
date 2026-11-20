@@ -853,8 +853,13 @@ void rewardWorkerLoop() noexcept {
 }
 
 bool configureRewardDelivery() {
+    const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
+    const std::string runtimeApiVersion = readEnvironment("ATLAS_SERVER_API_VERSION");
     if (readEnvironment("CHAOTIC_ATLAS_ENABLE_REWARD_DELIVERY") != "1" ||
-        readEnvironment("CHAOTIC_ATLAS_GIVE_ITEM_ABI_VERIFIED") != "1") return false;
+        readEnvironment("CHAOTIC_ATLAS_GIVE_ITEM_ABI_VERIFIED") != "1" ||
+        serverBuild.empty() || runtimeApiVersion != kCandidateApiVersion ||
+        readEnvironment("CHAOTIC_ATLAS_REWARD_VERIFIED_SERVER_BUILD") != serverBuild ||
+        readEnvironment("CHAOTIC_ATLAS_REWARD_VERIFIED_API_VERSION") != runtimeApiVersion) return false;
 
     g_rewardJournalPath = readEnvironment("CHAOTIC_ATLAS_REWARD_JOURNAL_PATH");
     const std::string mapJson = readEnvironment("CHAOTIC_ATLAS_REWARD_ITEM_MAP_JSON");
