@@ -488,13 +488,13 @@ bool loadRewardJournal() {
         while (std::getline(input, line)) {
             if (line.empty()) continue;
             const auto record = nlohmann::json::parse(line);
-            const std::string key = record.value("idempotencyKey", "");
+            const std::string key = record.value("idempotencyKey", std::string{});
             RewardJournalEntry entry{
-                record.value("rewardId", ""),
-                record.value("targetExternalId", ""),
-                record.value("itemKey", ""),
+                record.value("rewardId", std::string{}),
+                record.value("targetExternalId", std::string{}),
+                record.value("itemKey", std::string{}),
                 record.value("quantity", 0),
-                record.value("state", "")
+                record.value("state", std::string{})
             };
             if (!chaotic::atlas::isRewardKey(key) || !isUuid(entry.rewardId) ||
                 !chaotic::atlas::isSteamId(entry.targetExternalId) ||
@@ -549,14 +549,14 @@ std::optional<RewardJournalEntry> findRewardJournalEntry(const std::string& key)
 
 bool parsePendingReward(const nlohmann::json& row, PendingReward& reward) {
     try {
-        if (!row.is_object() || row.value("game", "") != "atlas" ||
+        if (!row.is_object() || row.value("game", std::string{}) != "atlas" ||
             !row.contains("deliveryPayload") || !row["deliveryPayload"].is_object()) return false;
         const auto& payload = row["deliveryPayload"];
-        reward.id = row.value("id", "");
-        reward.leaseToken = row.value("leaseToken", "");
-        reward.idempotencyKey = row.value("idempotencyKey", "");
-        reward.targetExternalId = row.value("targetExternalId", "");
-        reward.itemKey = payload.value("itemKey", "");
+        reward.id = row.value("id", std::string{});
+        reward.leaseToken = row.value("leaseToken", std::string{});
+        reward.idempotencyKey = row.value("idempotencyKey", std::string{});
+        reward.targetExternalId = row.value("targetExternalId", std::string{});
+        reward.itemKey = payload.value("itemKey", std::string{});
         reward.quantity = payload.value("quantity", 0);
         return chaotic::atlas::isValidRewardDescriptor(
             reward.id, reward.leaseToken, reward.idempotencyKey,
@@ -595,7 +595,7 @@ bool renewRewardLease(const PendingReward& reward) {
     try {
         const auto parsed = nlohmann::json::parse(response);
         return parsed.value("data", nlohmann::json::object()).value("renewed", false) &&
-            parsed["data"].value("rewardId", "") == reward.id;
+            parsed["data"].value("rewardId", std::string{}) == reward.id;
     } catch (...) {
         return false;
     }
