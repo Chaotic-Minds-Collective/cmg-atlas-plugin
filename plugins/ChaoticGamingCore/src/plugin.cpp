@@ -27,8 +27,10 @@
 #define CG_PLUGIN_VERSION "0.2.0"
 #endif
 #ifndef CG_ATLAS_API_VERSION
-#define CG_ATLAS_API_VERSION "1.71"
+#define CG_ATLAS_API_VERSION 1.71
 #endif
+#define CG_STRINGIFY_DETAIL(value) #value
+#define CG_STRINGIFY(value) CG_STRINGIFY_DETAIL(value)
 
 namespace {
 struct PendingEvent {
@@ -48,6 +50,7 @@ LogoutFunction g_originalLogout = nullptr;
 
 constexpr char kPluginName[] = "Chaotic Gaming Core";
 constexpr char kAdapterVersion[] = CG_PLUGIN_VERSION;
+constexpr char kCandidateApiVersion[] = CG_STRINGIFY(CG_ATLAS_API_VERSION);
 
 std::atomic<bool> g_stop{true};
 // Serializes worker ownership and configuration across loader callbacks.
@@ -106,7 +109,7 @@ void logLifecycle(const char* eventName) noexcept {
         message,
         sizeof(message),
         "[%s] %s | pluginVersion=%s | serverBuild=%s | runtimeApi=%s | candidateApi=%s\n",
-        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, CG_ATLAS_API_VERSION
+        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, kCandidateApiVersion
     );
     logMessage(message);
 }
