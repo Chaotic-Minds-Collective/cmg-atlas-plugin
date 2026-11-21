@@ -1,8 +1,9 @@
 #include <string>
 
 // Compile/link smoke check for the pinned ATLAS SDK.
-// This export is deliberately not called by Plugin_Init: live runtime behavior
-// remains gated on an isolated server compatibility test.
+// The SDK link-check export is not called by Plugin_Init. The sentinel export
+// below is called at startup; live gameplay compatibility still requires an
+// isolated server test.
 #include <API/Atlas/Atlas.h>
 
 extern "C" __declspec(dllexport) ArkApi::ICommands* __fastcall
