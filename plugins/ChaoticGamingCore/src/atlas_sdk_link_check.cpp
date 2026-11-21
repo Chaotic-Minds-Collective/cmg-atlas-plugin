@@ -1,3 +1,5 @@
+#include <string>
+
 // Compile/link smoke check for the pinned ATLAS SDK.
 // This export is deliberately not called by Plugin_Init: live runtime behavior
 // remains gated on an isolated server compatibility test.
