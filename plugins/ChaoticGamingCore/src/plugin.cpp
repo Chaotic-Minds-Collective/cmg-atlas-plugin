@@ -36,6 +36,10 @@
 #ifndef CG_ATLAS_API_VERSION
 #define CG_ATLAS_API_VERSION 1.71
 #endif
+#ifndef CG_ATLAS_API_COMMIT
+#define CG_ATLAS_API_COMMIT "unknown"
+#endif
+extern "C" bool __fastcall CG_AtlasMissingSymbolLookupFailsClosed() noexcept;
 #define CG_STRINGIFY_DETAIL(value) #value
 #define CG_STRINGIFY(value) CG_STRINGIFY_DETAIL(value)
 
@@ -115,6 +119,7 @@ LogoutFunction g_originalLogout = nullptr;
 constexpr char kPluginName[] = "Chaotic Gaming Core";
 constexpr char kAdapterVersion[] = CG_PLUGIN_VERSION;
 constexpr char kCandidateApiVersion[] = CG_STRINGIFY(CG_ATLAS_API_VERSION);
+constexpr char kPinnedApiCommit[] = CG_ATLAS_API_COMMIT;
 
 std::atomic<bool> g_stop{true};
 // Serializes worker ownership and configuration across loader callbacks.
@@ -148,6 +153,7 @@ bool g_serverStateCallbackRegistered{false};
 
 constexpr char kRewardCallbackId[] = "ChaoticGamingCore.RewardDelivery";
 std::atomic<bool> g_rewardDeliveryConfigured{false};
+std::atomic<bool> g_nativeSymbolResolutionSafe{false};
 bool g_rewardCallbackRegistered{false};
 std::thread g_rewardThread;
 std::mutex g_rewardMutex;
@@ -174,7 +180,7 @@ void logMessage(const char* message) noexcept {
 void logLifecycle(const char* eventName) noexcept {
     char serverBuild[128]{};
     char runtimeApiVersion[64]{};
-    char message[512]{};
+    char message[768]{};
 
     const std::string build = readEnvironment("ATLAS_SERVER_BUILD");
     const std::string runtimeApi = readEnvironment("ATLAS_SERVER_API_VERSION");
@@ -184,8 +190,8 @@ void logLifecycle(const char* eventName) noexcept {
     std::snprintf(
         message,
         sizeof(message),
-        "[%s] %s | pluginVersion=%s | serverBuild=%s | runtimeApi=%s | candidateApi=%s\n",
-        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, kCandidateApiVersion
+        "[%s] %s | pluginVersion=%s | serverBuild=%s | runtimeApi=%s | candidateApi=%s | apiCommit=%s\n",
+        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, kCandidateApiVersion, kPinnedApiCommit
     );
     logMessage(message);
 }
@@ -861,6 +867,7 @@ void rewardWorkerLoop() noexcept {
 }
 
 bool configureRewardDelivery() {
+    if (!g_nativeSymbolResolutionSafe.load(std::memory_order_acquire)) return false;
     const std::string serverBuild = readEnvironment("ATLAS_SERVER_BUILD");
     const std::string runtimeApiVersion = readEnvironment("ATLAS_SERVER_API_VERSION");
     if (readEnvironment("CHAOTIC_ATLAS_ENABLE_REWARD_DELIVERY") != "1" ||
@@ -950,6 +957,10 @@ bool pinPluginModule() noexcept {
 }
 
 void startPlayerEventHooks() {
+    if (!g_nativeSymbolResolutionSafe.load(std::memory_order_acquire)) {
+        logMessage("[Chaotic Gaming Core] Player hooks skipped: native missing-symbol lookup diagnostic did not pass.\n");
+        return;
+    }
     if (g_hooksPinnedPassthrough) {
         logMessage("[Chaotic Gaming Core] Player hooks are pinned in passthrough mode after incomplete setup; restart the server to retry.\n");
         return;
@@ -1106,6 +1117,13 @@ void startHeartbeat() {
 
 CG_EXPORT void CG_CALL Plugin_Init() noexcept {
     logLifecycle("Plugin_Init");
+    const bool missingSymbolLookupSafe = CG_AtlasMissingSymbolLookupFailsClosed();
+    g_nativeSymbolResolutionSafe.store(missingSymbolLookupSafe, std::memory_order_release);
+    if (!missingSymbolLookupSafe) {
+        logMessage("[Chaotic Gaming Core] CRITICAL: native missing-symbol lookup diagnostic failed; plugin initialization aborted.\n");
+        return;
+    }
+    logMessage("[Chaotic Gaming Core] Native missing-symbol lookup diagnostic passed.\n");
     try {
         std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
         startHeartbeat();

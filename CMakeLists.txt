@@ -7,11 +7,7 @@ endif()
 
 # Pin the ATLAS API source and import library together; do not track a moving branch.
 include(FetchContent)
-set(CMG_ATLAS_API_COMMIT "a757d0c256e6d221742fb131d46d8049c12815a6" CACHE STRING "Pinned cmg-atlas-api commit")
-if(CMG_ATLAS_API_COMMIT STREQUAL "144ee5301177428894eda4c318276f52f051d3f5" OR
-   CMG_ATLAS_API_COMMIT STREQUAL "1bc2be00b5841069d816ff6c9d85486b13cfc252")
-  set(CMG_ATLAS_API_COMMIT "a757d0c256e6d221742fb131d46d8049c12815a6" CACHE STRING "Pinned cmg-atlas-api commit" FORCE)
-endif()
+set(CMG_ATLAS_API_COMMIT "d46a44993d65f22d2497f040c6979248d0ad0dd4" CACHE STRING "Pinned cmg-atlas-api commit")
 FetchContent_Declare(cmg_atlas_api
   GIT_REPOSITORY https://github.com/Chaotic-Minds-Collective/cmg-atlas-api.git
   GIT_TAG ${CMG_ATLAS_API_COMMIT}
@@ -48,6 +44,7 @@ target_compile_definitions(ChaoticGamingCore PRIVATE
   _UNICODE
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
   CG_ATLAS_API_VERSION=1.71
+  CG_ATLAS_API_COMMIT=\"${CMG_ATLAS_API_COMMIT}\"
 )
 target_link_libraries(ChaoticGamingCore PRIVATE cmg_atlas_sdk_import winhttp)
 
