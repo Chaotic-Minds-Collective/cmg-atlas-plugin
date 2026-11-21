@@ -835,7 +835,7 @@ void rewardWorkerLoop() noexcept {
                             if (g_stop.load(std::memory_order_acquire) || work->done) continue;
                             if (std::chrono::steady_clock::now() >= deliveryDeadline) {
                                 work->leaseLost = true;
-                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\\n");
+                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\n");
                                 break;
                             }
                             if (std::chrono::steady_clock::now() >= nextRenewal) {
@@ -958,7 +958,7 @@ bool pinPluginModule() noexcept {
 
 void startPlayerEventHooks() {
     if (!g_nativeSymbolResolutionSafe.load(std::memory_order_acquire)) {
-        logMessage("[Chaotic Gaming Core] Player hooks skipped: native missing-symbol lookup diagnostic did not pass.\\n");
+        logMessage("[Chaotic Gaming Core] Player hooks skipped: native missing-symbol lookup diagnostic did not pass.\n");
         return;
     }
     if (g_hooksPinnedPassthrough) {
@@ -1120,8 +1120,8 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
     const bool missingSymbolLookupSafe = CG_AtlasMissingSymbolLookupFailsClosed();
     g_nativeSymbolResolutionSafe.store(missingSymbolLookupSafe, std::memory_order_release);
     logMessage(missingSymbolLookupSafe
-        ? "[Chaotic Gaming Core] Native missing-symbol lookup diagnostic passed.\\n"
-        : "[Chaotic Gaming Core] CRITICAL: native missing-symbol lookup diagnostic failed; gameplay hooks and reward delivery remain disabled.\\n");
+        ? "[Chaotic Gaming Core] Native missing-symbol lookup diagnostic passed.\n"
+        : "[Chaotic Gaming Core] CRITICAL: native missing-symbol lookup diagnostic failed; gameplay hooks and reward delivery remain disabled.\n");
     try {
         std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
         startHeartbeat();
