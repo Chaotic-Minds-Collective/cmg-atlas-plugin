@@ -44,7 +44,7 @@ target_compile_definitions(ChaoticGamingCore PRIVATE
   _UNICODE
   CG_PLUGIN_VERSION="${PROJECT_VERSION}"
   CG_ATLAS_API_VERSION=1.71
-  CG_ATLAS_API_COMMIT=\"${CMG_ATLAS_API_COMMIT}\"
+    CG_ATLAS_API_COMMIT=\"\${CMG_ATLAS_API_COMMIT}\"
 )
 target_link_libraries(ChaoticGamingCore PRIVATE cmg_atlas_sdk_import winhttp)
 
