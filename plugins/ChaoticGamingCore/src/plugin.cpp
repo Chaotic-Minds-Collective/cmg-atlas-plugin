@@ -190,8 +190,8 @@ void logLifecycle(const char* eventName) noexcept {
     std::snprintf(
         message,
         sizeof(message),
-        "[%s] %s | pluginVersion=%s | serverBuild=%s | runtimeApi=%s | candidateApi=%s\n",
-        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, kCandidateApiVersion
+        "[%s] %s | pluginVersion=%s | serverBuild=%s | runtimeApi=%s | candidateApi=%s | apiCommit=%s\n",
+        kPluginName, eventName, kAdapterVersion, serverBuild, runtimeApiVersion, kCandidateApiVersion, kPinnedApiCommit
     );
     logMessage(message);
 }
