@@ -13,10 +13,12 @@ See the [complete Chaotic Minds Gaming ATLAS Plugin Suite](docs/PLUGIN_SUITE.md)
 ## ATLAS SDK dependency
 
 The native Windows target fetches **cmg-atlas-api** at pinned commit
-[`a757d0c256e6d221742fb131d46d8049c12815a6`](https://github.com/Chaotic-Minds-Collective/cmg-atlas-api/commit/a757d0c256e6d221742fb131d46d8049c12815a6).
+[`d46a44993d65f22d2497f040c6979248d0ad0dd4`](https://github.com/Chaotic-Minds-Collective/cmg-atlas-api/commit/a757d0c256e6d221742fb131d46d8049c12815a6).
 This revision includes failure-safe hook management, plugin path validation,
-dependency-first loading, and the ATLAS player-cache/world-save compatibility
-fixes. The public headers and matching import library remain under
+dependency-first loading, ATLAS player-cache/world-save compatibility fixes,
+and fail-closed handling for missing native offset symbols. The adapter also
+runs a startup sentinel lookup diagnostic and reports the exact pinned API
+commit in its lifecycle log. The public headers and matching import library remain under
 `version/Core/Public` and `out_lib/AtlasApi.lib`; CMake verifies both exist
 before building. The API repository's `LICENSE.TXT` is MIT; retain its
 copyright and license notice when redistributing substantial portions or SDK
