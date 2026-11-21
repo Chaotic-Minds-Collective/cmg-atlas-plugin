@@ -835,7 +835,7 @@ void rewardWorkerLoop() noexcept {
                             if (g_stop.load(std::memory_order_acquire) || work->done) continue;
                             if (std::chrono::steady_clock::now() >= deliveryDeadline) {
                                 work->leaseLost = true;
-                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\n");
+                                logMessage("[Chaotic Gaming Core] Reward game-thread dispatch exceeded five minutes; lease expiry will force manual review.\\n");
                                 break;
                             }
                             if (std::chrono::steady_clock::now() >= nextRenewal) {
