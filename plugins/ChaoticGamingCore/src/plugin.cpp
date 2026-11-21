@@ -1120,10 +1120,10 @@ CG_EXPORT void CG_CALL Plugin_Init() noexcept {
     const bool missingSymbolLookupSafe = CG_AtlasMissingSymbolLookupFailsClosed();
     g_nativeSymbolResolutionSafe.store(missingSymbolLookupSafe, std::memory_order_release);
     if (!missingSymbolLookupSafe) {
-        logMessage("[Chaotic Gaming Core] CRITICAL: native missing-symbol lookup diagnostic failed; plugin initialization aborted.\\n");
+        logMessage("[Chaotic Gaming Core] CRITICAL: native missing-symbol lookup diagnostic failed; plugin initialization aborted.\n");
         return;
     }
-    logMessage("[Chaotic Gaming Core] Native missing-symbol lookup diagnostic passed.\\n");
+    logMessage("[Chaotic Gaming Core] Native missing-symbol lookup diagnostic passed.\n");
     try {
         std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
         startHeartbeat();
